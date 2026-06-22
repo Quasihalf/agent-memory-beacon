@@ -195,21 +195,92 @@ def read_transcript(path):
 
 
 def extract_decisions(text):
-    """Extract all [DECISION: ...] blocks from text."""
-    pattern = r"\[DECISION:\s*(.*?)\s*\|\s*context:\s*(.*?)\]"
-    matches = re.findall(pattern, text, re.DOTALL)
-    return [{"text": m[0].strip().replace("\n", " "),
-             "context": m[1].strip().replace("\n", " ")}
-            for m in matches]
+    """Extract all [DECISION: ...] blocks from text.
+
+    Supported forms:
+    - [DECISION:summary| context:why]
+    - [DECISION:summary| context:why| project:slug| scope:project]
+    """
+    decisions = []
+    for raw in re.findall(r"\[DECISION:\s*(.*?)\]", text, re.DOTALL):
+        summary, fields = parse_annotation_fields(raw)
+        context = fields.get("context", "")
+        if not summary and not context:
+            continue
+        item = {
+            "text": normalize_annotation_text(summary),
+            "context": normalize_annotation_text(context),
+        }
+        project = normalize_project_slug(fields.get("project", ""))
+        if project:
+            item["project"] = project
+        scope = normalize_annotation_text(fields.get("scope", ""))
+        if scope:
+            item["scope"] = scope
+        decisions.append(item)
+    return decisions
 
 
 def extract_errors(text):
-    """Extract all [ERROR: type=... | resolution=...] blocks from text."""
-    pattern = r"\[ERROR:\s*type=(\S+)\s*\|\s*resolution=(.*?)\]"
-    matches = re.findall(pattern, text, re.DOTALL)
-    return [{"type": m[0].strip(),
-             "resolution": m[1].strip().replace("\n", " ")}
-            for m in matches]
+    """Extract all [ERROR: ...] blocks from text.
+
+    Supported forms:
+    - [ERROR:type=path-filesystem| resolution=how fixed]
+    - [ERROR:type:path-filesystem| resolution:how fixed| project:slug]
+    """
+    errors = []
+    for raw in re.findall(r"\[ERROR:\s*(.*?)\]", text, re.DOTALL):
+        leading, fields = parse_annotation_fields(raw)
+        if leading:
+            key, value = split_annotation_field(leading)
+            if key:
+                fields.setdefault(key, value)
+        err_type = fields.get("type", "")
+        resolution = fields.get("resolution", "")
+        if not err_type and not resolution:
+            continue
+        item = {
+            "type": normalize_annotation_text(err_type),
+            "resolution": normalize_annotation_text(resolution),
+        }
+        project = normalize_project_slug(fields.get("project", ""))
+        if project:
+            item["project"] = project
+        errors.append(item)
+    return errors
+
+
+def parse_annotation_fields(raw):
+    """Split a pipe-delimited annotation into leading text and key/value fields."""
+    parts = [p.strip() for p in str(raw or "").split("|")]
+    leading = parts[0] if parts else ""
+    fields = {}
+    for part in parts[1:]:
+        key, value = split_annotation_field(part)
+        if key:
+            fields[key] = value
+    return leading, fields
+
+
+def split_annotation_field(part):
+    """Parse 'key:value' or 'key=value' fields used by annotation tags."""
+    match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*[:=]\s*(.*?)\s*$", str(part or ""), re.DOTALL)
+    if not match:
+        return None, ""
+    return match.group(1).strip().lower(), match.group(2).strip()
+
+
+def normalize_annotation_text(value):
+    """Keep annotation content single-line for YAML/frontmatter stability."""
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def normalize_project_slug(value):
+    """Return a safe project slug from optional annotation metadata."""
+    value = normalize_annotation_text(value).strip("'\"")
+    if re.match(r"^[A-Za-z0-9_.-]+$", value):
+        return value
+    return ""
 
 
 def extract_session_summary(text):
@@ -240,6 +311,10 @@ def detect_project(cfg, text, meta):
     summary_project = project_from_session_summary(text)
     if summary_project:
         return summary_project
+
+    annotation_project = project_from_annotations(text)
+    if annotation_project:
+        return annotation_project
 
     # Use project_hints from meta if available
     hints = meta.get("project_hints", {})
@@ -286,6 +361,17 @@ def project_from_session_summary(text):
             return first
 
     return None
+
+
+def project_from_annotations(text):
+    """Prefer explicit project fields from decision/error annotations."""
+    projects = []
+    projects.extend(d.get("project") for d in extract_decisions(text))
+    projects.extend(e.get("project") for e in extract_errors(text))
+    projects = [p for p in projects if p]
+    if not projects:
+        return None
+    return max(set(projects), key=projects.count)
 
 
 def build_project_keywords(cfg):

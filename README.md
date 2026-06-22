@@ -86,6 +86,24 @@ python3 -m venv .venv
 对 Codex 来说，`AGENTS.md` 里的标注规则是 L1 感官系统；`session_harvester.py` 会从 Codex JSONL transcript 中读取这些标注。
 每次成功收割后，harvester 还会刷新 `00-Inbox/Agent Memory Index.md`，把最近的 session、decision 和 error 汇总成一个 Obsidian 入口。
 
+### 与上游 v3 的关系
+
+这个分支保留 v2 的自动化工作流: Codex / Claude Code 对话结束后由 hook 自动收割，
+开新对话时由 SessionStart 补收割，不要求用户手动运行 skill。
+
+从 v3 吸收的部分是更明确的“最小有效记录”和防污染思路:
+
+- 标注内容保持短句，只记录能复用的技术决策和已解决错误。
+- 默认使用 `[DECISION:...| context:...]` / `[ERROR:type=...| resolution=...]`。
+- 需要跨项目路由时，可以额外写 `project:<project-slug>` 和 `scope:project`。
+
+示例:
+
+```text
+[DECISION:保留 hook 自动收割作为主路径| context:用户目标是自动化记录，不是手动 skill 调用| project:github-obsidian-knowledge-brain| scope:project]
+[ERROR:type=path-filesystem| resolution=修正 Obsidian 对绝对路径 Markdown 链接的误识别| project:github-obsidian-knowledge-brain]
+```
+
 如果只是想手动重建这个入口，不处理 transcript:
 
 ```bash

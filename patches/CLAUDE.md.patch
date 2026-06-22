@@ -29,6 +29,12 @@ Preferred format (one annotation per line at end of reply; keep machine labels i
 [DECISION:<one-line summary>| context:<why this choice>]
 ```
 
+Optional v3-compatible routing fields are allowed when the transcript may mention multiple projects:
+
+```
+[DECISION:<one-line summary>| context:<why this choice>| project:<project-slug>| scope:project]
+```
+
 Example:
 
 ```
@@ -47,6 +53,12 @@ Preferred format (one annotation per line at end of reply; keep keys in English,
 
 ```
 [ERROR:type=<from-error-taxonomy>| resolution:<how fixed>]
+```
+
+Optional v3-compatible routing field:
+
+```
+[ERROR:type=<from-error-taxonomy>| resolution:<how fixed>| project:<project-slug>]
 ```
 
 Example:
