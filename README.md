@@ -55,14 +55,75 @@ AI 初始化 → 加载 CLAUDE.md + 最新 Agent Memory → 已更聪明
 
 ## 快速安装 / Quick Install
 
+### macOS + Codex
+
 ```bash
 git clone https://github.com/YOUR_USERNAME/obsidian-knowledge-brain.git
 cd obsidian-knowledge-brain/scripts
-pip install -r requirements.txt   # PyYAML + requests (LLM mode optional)
-python setup.py
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt   # PyYAML + requests (LLM mode optional)
+.venv/bin/python setup.py
 ```
 
-脚本问三个问题，自动建好一切。
+脚本会默认使用:
+
+- Codex transcript: `~/.codex/sessions`
+- Vault: `~/ObsidianBrain`
+- Agent Memory markdown: `~/ObsidianBrain/05-Agent-Memory`
+
+然后安装 Codex 集成。这个命令会非破坏性合并 `~/.codex/hooks.json`，并把 `patches/CLAUDE.md.patch` 追加到当前目录的 `AGENTS.md`。写入前会自动生成 `.bak-*` 备份。
+
+```bash
+.venv/bin/python install_codex.py
+```
+
+也可以先预览:
+
+```bash
+.venv/bin/python install_codex.py --dry-run
+```
+
+对 Codex 来说，`AGENTS.md` 里的标注规则是 L1 感官系统；`session_harvester.py` 会从 Codex JSONL transcript 中读取这些标注。
+每次成功收割后，harvester 还会刷新 `00-Inbox/Agent Memory Index.md`，把最近的 session、decision 和 error 汇总成一个 Obsidian 入口。
+
+如果只是想手动重建这个入口，不处理 transcript:
+
+```bash
+.venv/bin/python session_harvester.py --mode index
+```
+
+手动配置时，在 `~/.codex/hooks.json` 里加入 Stop + SessionStart hook。如果已有 hooks，不要覆盖原有项，把下面的 command 追加到对应数组里:
+
+```json
+{
+  "hooks": {
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "path/to/scripts/.venv/bin/python path/to/scripts/session_harvester.py --mode stop",
+        "timeout": 120
+      }]
+    }],
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "path/to/scripts/.venv/bin/python path/to/scripts/session_harvester.py --mode start",
+        "timeout": 120
+      }]
+    }]
+  }
+}
+```
+
+最后配定时任务:
+
+```bash
+cd path/to/scripts && .venv/bin/python runner.py --full
+```
+
+### Claude Code compatibility
+
+Claude Code 仍然可以使用同一套脚本。把 `config.yaml` 里的 `agent` 设为 `claude`，并填 `claude_project_path`。
 
 **然后必须做两件事**:
 1. 把 `patches/CLAUDE.md.patch` 的内容加到你的 `CLAUDE.md`（这是 L1 — AI 的"感官系统"）

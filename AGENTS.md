@@ -1,3 +1,5 @@
+
+
 ## Obsidian Knowledge Brain — Auto-Maintained Blocks
 
 > Codex users: paste this block into `AGENTS.md`.
@@ -8,9 +10,16 @@
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- COMPILED:RULES_START -->
+| Rule ID | Title | Category | Applies To | Status |
+|---------|-------|----------|------------|--------|
 <!-- COMPILED:RULES_END -->
 
 <!-- COMPILED:PROJECTS_START -->
+| Project | Decisions | Pitfalls | Last Session |
+|---------|-----------|----------|-------------|
+| claude-code-test | 1 | 1 | 2026-06-20 |
+| github-obsidian-knowledge-brain | 17 | 16 | 2026-06-21 |
+| notes-counter | 1 | 2 | 2026-06-20 |
 <!-- COMPILED:PROJECTS_END -->
 
 ---

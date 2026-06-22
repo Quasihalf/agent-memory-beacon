@@ -27,7 +27,11 @@ def run(cfg, dry_run=False, full=False):
     all_error_types = []
     for cat in taxonomy.get('categories', []):
         if isinstance(cat, dict) and 'subcategories' in cat:
-            all_error_types.extend(cat.get('subcategories', []))
+            for sub in cat.get('subcategories', []):
+                if isinstance(sub, str):
+                    all_error_types.append(sub)
+                elif isinstance(sub, dict) and sub.get('name'):
+                    all_error_types.append(sub['name'])
 
     # ── Phase 2: Keyword screening (always runs, no API) ──
     try:
@@ -50,12 +54,12 @@ def run(cfg, dry_run=False, full=False):
                 print(f"    Deep analysis: {len(learnings)} root cause(s) identified")
             except Exception as e:
                 print(f"    LLM deep analysis failed ({e}), using heuristic fallback")
-                learnings = heuristic_root_cause_analysis(patterns, taxonomy)
+                learnings = heuristic_root_cause_analysis(vault, patterns, taxonomy)
         else:
             print("    LLM analysis skipped: no API key — using heuristic fallback")
-            learnings = heuristic_root_cause_analysis(patterns, taxonomy)
+            learnings = heuristic_root_cause_analysis(vault, patterns, taxonomy)
     elif patterns:
-        learnings = heuristic_root_cause_analysis(patterns, taxonomy)
+        learnings = heuristic_root_cause_analysis(vault, patterns, taxonomy)
 
     # ── Phase 4: Generate summary ──
     summary = synthesize_learnings(learnings, sessions_scanned)
@@ -193,7 +197,7 @@ ROOT_CAUSE_KB = {
     "R package management on non-standard library path": {
         "symptoms": ["install_fail", "package_not_found", "bioc_version_mismatch",
                     "dependency_conflict"],
-        "principle": "R library is at D:/R/library not default — always check before install.packages(), never introduce new deps without updating config",
+        "principle": "R packages may be installed in a non-default library path — always inspect .libPaths() before install.packages(), never introduce new deps without updating config",
         "suggested_rule_id": "RULE-R-002",
     },
     "Chinese text encoding in Windows": {
@@ -215,7 +219,7 @@ ROOT_CAUSE_KB = {
 }
 
 
-def heuristic_root_cause_analysis(patterns, taxonomy):
+def heuristic_root_cause_analysis(vault, patterns, taxonomy):
     """Use knowledge base to group errors by root cause without LLM."""
     learnings = []
     seen_errors = set()
@@ -245,7 +249,7 @@ def heuristic_root_cause_analysis(patterns, taxonomy):
                 "projects_affected": all_projects,
                 "impact": "medium" if total_occurrences >= 4 else "low",
                 "suggested_rule_id": kb['suggested_rule_id'],
-                "action": "reinforce" if rule_exists(kb['suggested_rule_id']) else "new_rule",
+                "action": "reinforce" if rule_exists(vault, kb['suggested_rule_id']) else "new_rule",
             })
 
     # Any errors not matched by KB → flag as "new territory"
@@ -267,9 +271,9 @@ def heuristic_root_cause_analysis(patterns, taxonomy):
     return learnings
 
 
-def rule_exists(rule_id):
+def rule_exists(vault, rule_id):
     """Check if a rule already exists in the vault."""
-    path = os.path.join("D:/Obsidian/a", '00-Rules', f"{rule_id}.md")
+    path = os.path.join(vault, '00-Rules', f"{rule_id}.md")
     return os.path.exists(path)
 
 

@@ -7,6 +7,7 @@ generates config.yaml, copies templates, and validates everything.
 
 import os
 import sys
+import json
 import yaml
 import shutil
 from pathlib import Path
@@ -53,8 +54,13 @@ def detect_defaults():
     # Python path
     defaults['python_path'] = sys.executable
 
-    # Claude project path
+    # Codex session path (macOS/Linux default)
     home = os.path.expanduser("~")
+    codex_home = os.path.join(home, ".codex")
+    defaults['codex_home'] = codex_home
+    defaults['codex_sessions_path'] = os.path.join(codex_home, "sessions")
+
+    # Claude project path (kept for compatibility)
     claude_projects = os.path.join(home, ".claude", "projects")
     if os.path.exists(claude_projects):
         # List available project dirs
@@ -79,11 +85,13 @@ def detect_defaults():
 
     # Vault path
     defaults['vault_path'] = os.path.join(home, "ObsidianBrain")
+    defaults['agent_memory_path'] = os.path.join(defaults['vault_path'], "05-Agent-Memory")
 
-    # CLAUDE.md
+    # CLAUDE.md / AGENTS.md
     for candidate in [
         os.path.join(home, "projects", "CLAUDE.md"),
         os.path.join(os.getcwd(), "CLAUDE.md"),
+        os.path.join(os.getcwd(), "AGENTS.md"),
     ]:
         if os.path.exists(candidate):
             defaults['claude_md_path'] = candidate
@@ -100,6 +108,7 @@ def create_vault_structure(vault_path):
     os.makedirs(vault, exist_ok=True)
 
     dirs = [
+        "00-Inbox",
         "00-Rules/_inbox/_rejected",
         "00-Rules/_archive",
         "01-Projects",
@@ -109,15 +118,35 @@ def create_vault_structure(vault_path):
         "04-Feedback/_raw-sessions",
         "04-Feedback/_rollback",
         "04-Feedback/weekly-reports",
+        "05-Agent-Memory",
     ]
 
     for d in dirs:
         dpath = os.path.join(vault, d)
         os.makedirs(dpath, exist_ok=True)
 
+    obsidian_dir = os.path.join(vault, ".obsidian")
+    os.makedirs(obsidian_dir, exist_ok=True)
+    app_json = os.path.join(obsidian_dir, "app.json")
+    app_config = {}
+    if os.path.exists(app_json):
+        try:
+            with open(app_json, "r", encoding="utf-8") as f:
+                app_config = json.load(f)
+        except Exception:
+            app_config = {}
+    if not isinstance(app_config.get("userIgnoreFilters"), list):
+        app_config["userIgnoreFilters"] = []
+    for ignore in ["04-Feedback/_raw-sessions/", "04-Feedback/_rollback/", "Users/"]:
+        if ignore not in app_config["userIgnoreFilters"]:
+            app_config["userIgnoreFilters"].append(ignore)
+    with open(app_json, "w", encoding="utf-8") as f:
+        json.dump(app_config, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
     # Write vault README.md with frontmatter
     readme_content = f"""---
-vault_version: "1.0"
+vault_version: "2.0"
 created: {__import__('datetime').datetime.now().strftime('%Y-%m-%d')}
 vault_name: "Obsidian Knowledge Brain"
 description: "AI-human shared knowledge brain — dual-channel approval system for project memory and cross-project rules"
@@ -131,6 +160,7 @@ description: "AI-human shared knowledge brain — dual-channel approval system f
 
 | Directory | Purpose |
 |-----------|---------|
+| `00-Inbox/` | Visible agent memory index and quick review entry points |
 | `00-Rules/` | Active rules, inbox approval cards, archive |
 | `01-Projects/` | One folder per project with Memory/sessions/ |
 | `02-Templates/` | Markdown templates for sessions, decisions, pitfalls |
@@ -351,6 +381,7 @@ def validate_setup(vault_path, config_path):
         "04-Feedback/_logs",
         "04-Feedback/_raw-sessions",
         "04-Feedback/weekly-reports",
+        "05-Agent-Memory",
     ]
     for d in required_dirs:
         dpath = os.path.join(vault, d)
@@ -374,7 +405,7 @@ def validate_setup(vault_path, config_path):
     else:
         with open(config_path, 'r', encoding='utf-8') as f:
             cfg = yaml.safe_load(f)
-        for key in ['vault_path', 'claude_project_path', 'python_path']:
+        for key in ['vault_path', 'python_path']:
             if not cfg.get(key):
                 errors.append(f"config.yaml: {key} is empty")
 
@@ -401,11 +432,20 @@ def main():
     if vault_path and not expand_path(vault_path):
         vault_path = defaults['vault_path']
 
-    claude_project_path = prompt_required(
-        f"Claude projects directory (where JSONL sessions are stored)"
+    agent = prompt(
+        "Agent runtime (codex/claude)",
+        "codex"
+    ).lower()
+
+    codex_sessions_path = prompt(
+        "Codex sessions directory",
+        defaults['codex_sessions_path']
     )
-    if not claude_project_path:
-        claude_project_path = defaults['claude_project_path']
+
+    claude_project_path = prompt(
+        f"Claude projects directory (optional, for Claude Code JSONL sessions)",
+        defaults.get('claude_project_path', '')
+    )
 
     python_path = prompt(
         "Python 3 interpreter path",
@@ -413,8 +453,13 @@ def main():
     )
 
     claude_md_path = prompt(
-        "Path to CLAUDE.md (for compiler step, optional)",
+        "Path to CLAUDE.md or AGENTS.md (optional compiled block target)",
         defaults.get('claude_md_path', '')
+    )
+
+    agent_memory_path = prompt(
+        "Agent Memory markdown directory",
+        os.path.join(expand_path(vault_path), "05-Agent-Memory")
     )
 
     settings_json = prompt(
@@ -462,9 +507,12 @@ def main():
     # Step 5: Confirm
     print("--- Summary ---")
     print(f"  Vault path:        {vault_path}")
-    print(f"  Claude projects:   {claude_project_path}")
+    print(f"  Agent runtime:     {agent}")
+    print(f"  Codex sessions:    {codex_sessions_path}")
+    print(f"  Claude projects:   {claude_project_path or '(not set)'}")
     print(f"  Python:            {python_path}")
-    print(f"  CLAUDE.md:         {claude_md_path or '(not set)'}")
+    print(f"  Compile target:    {claude_md_path or '(not set)'}")
+    print(f"  Agent Memory:      {agent_memory_path}")
     print(f"  API settings:      {settings_json or '(not set)'}")
     print(f"  Projects:          {project_names if project_names else '(none — add later)'}")
     print(f"  Scan schedule:     {scan_day} at {scan_hour:02d}:{scan_minute:02d}")
@@ -490,11 +538,18 @@ def main():
 
     # Step 8: Generate config.yaml
     config = {
-        'version': '1.0',
+        'version': '2.0',
+        'agent': agent,
         'vault_path': vault_path,
+        'codex_home': defaults['codex_home'],
+        'codex_sessions_path': codex_sessions_path,
         'claude_project_path': claude_project_path,
         'claude_md_path': claude_md_path,
+        'agent_memory_path': agent_memory_path,
         'python_path': python_path,
+        'projects': created if project_names else [],
+        'project_keywords': {},
+        'scan_on_start': True,
         'api': {
             'settings_json': settings_json,
             'base_url': None,
@@ -547,7 +602,10 @@ def main():
     print(f"  5. Run first scan:")
     print(f"     cd {script_dir}")
     print(f"     python runner.py --full")
-    print(f"  6. Set up weekly cron/scheduled task for runner.py")
+    print(f"  6. Install Codex hooks + AGENTS.md patch:")
+    print(f"     python install_codex.py --dry-run")
+    print(f"     python install_codex.py")
+    print(f"  7. Set up weekly cron/scheduled task for runner.py")
     print()
 
 

@@ -9,18 +9,20 @@ RULES_END = "<!-- COMPILED:RULES_END -->"
 PROJECTS_START = "<!-- COMPILED:PROJECTS_START -->"
 PROJECTS_END = "<!-- COMPILED:PROJECTS_END -->"
 
-MEMORY_DIR = "C:/Users/Administrator/.claude/projects/d--C-file/memory"
-MEMORY_INDEX = os.path.join(MEMORY_DIR, "MEMORY.md")
-
 def run(cfg, dry_run=False, step_results=None):
     vault = cfg['vault_path']
-    claude_md_path = cfg.get('claude_md_path', "D:/C-file/CLAUDE.md")
+    claude_md_path = cfg.get('claude_md_path', "")
+    memory_dir = cfg.get('agent_memory_path') or os.path.join(vault, "05-Agent-Memory")
     results = {"rules_compiled": 0, "projects_compiled": 0, "dirty": False,
                "memory_rules_written": 0, "memory_index_updated": False}
 
     # ── Part A: CLAUDE.md compilation ──
     # Dirty detection
-    if has_uncommitted_changes(claude_md_path):
+    if not claude_md_path:
+        results["claude_md_skipped"] = "claude_md_path not configured"
+    elif not os.path.exists(claude_md_path):
+        results["claude_md_skipped"] = f"CLAUDE.md not found: {claude_md_path}"
+    elif has_uncommitted_changes(claude_md_path):
         results["error"] = "CLAUDE.md has uncommitted manual edits — compilation paused"
         # Don't return — still do Agent Memory part
     else:
@@ -54,7 +56,7 @@ def run(cfg, dry_run=False, step_results=None):
 
     # ── Part B: Agent Memory sync ──
     try:
-        mem_result = sync_to_agent_memory(vault, dry_run)
+        mem_result = sync_to_agent_memory(vault, memory_dir, dry_run)
         results.update(mem_result)
     except Exception as e:
         results["memory_error"] = str(e)
@@ -63,13 +65,16 @@ def run(cfg, dry_run=False, step_results=None):
 
 
 # ── Agent Memory Sync ────────────────────────────────────────
-def sync_to_agent_memory(vault, dry_run):
+def sync_to_agent_memory(vault, memory_dir, dry_run):
     """Write new/updated rules to Agent Memory so they load next session.
     Rules marked 'active' or 'beta' in 00-Rules/ get a memory file.
     """
     rules_dir = os.path.join(vault, '00-Rules')
     if not os.path.exists(rules_dir):
         return {"memory_rules_written": 0}
+
+    if not dry_run:
+        os.makedirs(memory_dir, exist_ok=True)
 
     written = 0
     updated_index = False
@@ -125,7 +130,7 @@ Status: {status}
 {fm_parts[2].strip()[:1000]}
 """
 
-        mem_path = os.path.join(MEMORY_DIR, f"{slug}.md")
+        mem_path = os.path.join(memory_dir, f"{slug}.md")
 
         # Check if existing memory needs update
         should_write = True
@@ -151,7 +156,7 @@ Status: {status}
     # Update MEMORY.md index if new rules were written
     if written > 0 and not dry_run:
         try:
-            rebuild_memory_index()
+            rebuild_memory_index(memory_dir)
             updated_index = True
         except Exception as e:
             print(f"    WARNING: Cannot rebuild memory index: {e}")
@@ -159,13 +164,14 @@ Status: {status}
     return {"memory_rules_written": written, "memory_index_updated": updated_index}
 
 
-def rebuild_memory_index():
+def rebuild_memory_index(memory_dir):
     """Rebuild MEMORY.md index from all memory files."""
     entries = []
-    for f in sorted(os.listdir(MEMORY_DIR)):
+    memory_index = os.path.join(memory_dir, "MEMORY.md")
+    for f in sorted(os.listdir(memory_dir)):
         if not f.endswith('.md') or f == 'MEMORY.md' or f.startswith('DEPRECATED'):
             continue
-        fp = os.path.join(MEMORY_DIR, f)
+        fp = os.path.join(memory_dir, f)
         try:
             with open(fp, 'r', encoding='utf-8') as fh:
                 content = fh.read()
@@ -185,27 +191,31 @@ def rebuild_memory_index():
 
     index_content = '\n'.join(lines) + '\n'
 
-    tmp = MEMORY_INDEX + '.tmp'
+    tmp = memory_index + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         f.write(index_content)
-    os.replace(tmp, MEMORY_INDEX)
+    os.replace(tmp, memory_index)
 
 def has_uncommitted_changes(filepath):
     """Check if file has uncommitted git changes (working tree + staged)."""
     try:
+        cwd = os.path.dirname(filepath)
+        relpath = os.path.basename(filepath)
         # Check both unstaged and staged changes vs HEAD
         result = subprocess.run(
-            ['git', 'diff', 'HEAD', '--name-only', filepath],
-            capture_output=True, text=True, cwd=os.path.dirname(filepath)
+            ['git', 'diff', 'HEAD', '--name-only', '--', relpath],
+            capture_output=True, text=True, cwd=cwd
         )
-        if filepath in result.stdout:
+        if relpath in result.stdout.splitlines():
             return True
         # Also check untracked changes (not yet staged)
         result2 = subprocess.run(
-            ['git', 'diff', '--name-only', filepath],
-            capture_output=True, text=True, cwd=os.path.dirname(filepath)
+            ['git', 'diff', '--name-only', '--', relpath],
+            capture_output=True, text=True, cwd=cwd
         )
-        return filepath in result2.stdout
+        if relpath in result2.stdout.splitlines():
+            return True
+        return False
     except Exception:
         return False  # If git not available, assume clean
 
@@ -236,10 +246,11 @@ def compile_rules_section(vault):
     return '\n'.join(lines)
 
 def compile_projects_section(vault):
-    """Generate project status table from 01-Projects/ decisions.md files."""
+    """Generate project status and recent memory from 01-Projects/ session files."""
     projects_dir = os.path.join(vault, '01-Projects')
     lines = ["| Project | Decisions | Pitfalls | Last Session |",
              "|---------|-----------|----------|-------------|"]
+    recent = []
 
     for proj in sorted(os.listdir(projects_dir)):
         proj_dir = os.path.join(projects_dir, proj)
@@ -254,8 +265,99 @@ def compile_projects_section(vault):
         last_session = get_latest_session(sessions_dir)
 
         lines.append(f"| {proj} | {n_decisions} | {n_pitfalls} | {last_session} |")
+        recent.extend(load_recent_session_memories(proj, sessions_dir))
+
+    recent.sort(
+        key=lambda item: (
+            str(item.get('date') or ''),
+            str(item.get('harvested_at') or ''),
+            str(item.get('session_id') or ''),
+        ),
+        reverse=True,
+    )
+
+    lines.extend([
+        "",
+        "## Recent Project Memory",
+        "",
+        "These are compact facts compiled from Obsidian so new agent sessions can use prior decisions and resolved errors without scanning the vault first.",
+        "",
+        "### Recent Decisions",
+        "",
+        "| Date | Project | Decision | Context |",
+        "|------|---------|----------|---------|",
+    ])
+    decision_rows = []
+    for item in recent:
+        for decision in item.get('decisions_made', []):
+            decision_rows.append((
+                item.get('date', ''),
+                item.get('project', ''),
+                truncate_table_cell(decision.get('text', ''), 100),
+                truncate_table_cell(decision.get('context', ''), 140),
+            ))
+    if decision_rows:
+        for date, project, text, context in decision_rows[:20]:
+            lines.append(f"| {date} | {project} | {text} | {context} |")
+    else:
+        lines.append("| - | - | - | - |")
+
+    lines.extend([
+        "",
+        "### Recent Resolved Errors",
+        "",
+        "| Date | Project | Type | Resolution |",
+        "|------|---------|------|------------|",
+    ])
+    error_rows = []
+    for item in recent:
+        for error in item.get('errors_encountered', []):
+            error_rows.append((
+                item.get('date', ''),
+                item.get('project', ''),
+                truncate_table_cell(error.get('type', ''), 50),
+                truncate_table_cell(error.get('resolution', ''), 160),
+            ))
+    if error_rows:
+        for date, project, error_type, resolution in error_rows[:20]:
+            lines.append(f"| {date} | {project} | `{error_type}` | {resolution} |")
+    else:
+        lines.append("| - | - | - | - |")
 
     return '\n'.join(lines)
+
+
+def load_recent_session_memories(project, sessions_dir):
+    if not os.path.exists(sessions_dir):
+        return []
+
+    memories = []
+    for filename in sorted(os.listdir(sessions_dir), reverse=True):
+        if not filename.endswith('.md') or filename.startswith('_'):
+            continue
+        path = os.path.join(sessions_dir, filename)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            parts = content.split('---', 2)
+            if len(parts) < 3:
+                continue
+            fm = yaml.safe_load(parts[1]) or {}
+            if not isinstance(fm, dict):
+                continue
+            fm.setdefault('project', project)
+            memories.append(fm)
+        except (OSError, yaml.YAMLError):
+            continue
+    return memories
+
+
+def truncate_table_cell(value, max_length):
+    text = ' '.join(str(value or '').split())
+    text = text.replace('|', '\\|')
+    if len(text) <= max_length:
+        return text
+    return text[:max_length - 1].rstrip() + '…'
 
 def replace_block(content, start_marker, end_marker, new_content):
     """Replace content between start and end markers."""

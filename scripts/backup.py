@@ -1,13 +1,10 @@
 """Step 1: Backup new JSONL sessions to vault."""
 import os
-import json
 import shutil
-import tempfile
-from datetime import datetime
+from transcript_utils import get_transcript_roots, iter_transcript_files, parse_transcript, session_id_from_path
 
 def run(cfg, dry_run=False, full=False):
     vault = cfg['vault_path']
-    source = cfg['claude_project_path']
     raw_dir = os.path.join(vault, '04-Feedback', '_raw-sessions')
     heartbeat_path = os.path.join(vault, '04-Feedback', 'heartbeat.md')
 
@@ -17,22 +14,18 @@ def run(cfg, dry_run=False, full=False):
     # Find new/changed sessions
     new_sessions = []
     skipped_agent = 0
-    for root, dirs, files in os.walk(source):
-        for f in files:
-            if not f.endswith('.jsonl'):
-                continue
-            fp = os.path.join(root, f)
-            session_id = f.replace('.jsonl', '')
+    for fp in iter_transcript_files(get_transcript_roots(cfg)):
+        session_id = session_id_from_path(fp)
 
-            # Filter: skip agent sub-sessions (inflate counts, share parent context)
-            if session_id.startswith('agent-') or 'subagent' in root.lower():
-                skipped_agent += 1
-                continue
+        # Filter: skip agent sub-sessions (inflate counts, share parent context)
+        if session_id.startswith('agent-') or 'subagent' in fp.lower():
+            skipped_agent += 1
+            continue
 
-            file_size = os.path.getsize(fp)
+        file_size = os.path.getsize(fp)
 
-            if full or session_id not in processed or processed[session_id] != file_size:
-                new_sessions.append((fp, session_id, file_size))
+        if full or session_id not in processed or processed[session_id] != file_size:
+            new_sessions.append((fp, session_id, file_size))
 
     processed_count = 0
     for fp, session_id, file_size in new_sessions:
@@ -74,41 +67,25 @@ def load_processed_sessions(heartbeat_path):
     if len(parts) < 3:
         return {}
     import yaml
-    fm = yaml.safe_load(parts[1])
+    fm = yaml.safe_load(parts[1]) or {}
+    if not isinstance(fm, dict):
+        return {}
     return fm.get('processed_sessions', {})
 
 def generate_md_summary_to_path(jsonl_path, md_path):
     """Generate a lightweight Markdown summary from JSONL metadata.
     Writes to the given path (caller handles atomicity)."""
-    with open(jsonl_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
+    parsed = parse_transcript(jsonl_path)
+    meta = parsed.get('meta', {})
+    messages = parsed.get('messages', [])
 
-    first_ts, last_ts, title = None, None, None
-    user_msgs = []
-    for line in lines[:50]:  # Sample first 50 lines for metadata
-        try:
-            rec = json.loads(line)
-            if not first_ts and 'timestamp' in rec:
-                first_ts = rec['timestamp']
-            if 'timestamp' in rec:
-                last_ts = rec['timestamp']
-            if rec.get('type') == 'ai-title':
-                title = rec.get('title', '')
-            if rec.get('type') == 'user' and 'message' in rec:
-                msg = rec['message']
-                if isinstance(msg, dict):
-                    # Anthropic API format: message.content is a list of blocks
-                    msg_text = str(msg.get('content', ''))[:200]
-                elif isinstance(msg, list):
-                    msg_text = str(msg)[:200]
-                elif isinstance(msg, str):
-                    msg_text = msg[:200]
-                else:
-                    msg_text = str(msg)[:200]
-                if msg_text:
-                    user_msgs.append(msg_text)
-        except json.JSONDecodeError:
-            continue
+    first_ts = meta.get('timestamp')
+    title = meta.get('thread_name') or meta.get('session_id') or 'Untitled'
+    user_msgs = [
+        m['text'][:200]
+        for m in messages
+        if m.get('role') in ('user', 'event', 'user_message')
+    ][:5]
 
     with open(md_path, 'w', encoding='utf-8') as f:
         f.write(f"---\n")

@@ -39,8 +39,8 @@ def main():
             try:
                 fm = yaml.safe_load(parts[1])
                 vault_ver = fm.get('vault_version', '0.0')
-                script_ver = "1.0"
-                if vault_ver.startswith('2.') or int(vault_ver.split('.')[0]) > 1:
+                script_ver = "2.0"
+                if int(str(vault_ver).split('.')[0]) > int(script_ver.split('.')[0]):
                     print(f"ERROR: Vault version {vault_ver} is incompatible with script version {script_ver}")
                     print("Please upgrade the scanner scripts or downgrade the vault.")
                     sys.exit(1)

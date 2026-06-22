@@ -4,25 +4,52 @@
 # config.yaml is git-ignored and never committed.
 
 version: "2.0"
+agent: "codex"   # codex or claude
 
 # --- REQUIRED PATHS ---
 
 # Path to your Obsidian vault (created by setup.py if it doesn't exist)
 vault_path: ""
 
-# Path to Claude projects directory where session JSONL files live
+# Codex on macOS stores JSONL transcripts under ~/.codex/sessions/YYYY/MM/DD/
+codex_home: "~/.codex"
+codex_sessions_path: "~/.codex/sessions"
+
+# Optional extra transcript roots. Each root may be a directory or a JSONL file.
+transcript_paths: []
+
+# Path to Claude projects directory where session JSONL files live (optional)
 claude_project_path: ""
 
 # Path to Python 3 interpreter
-python_path: "python"
+python_path: "python3"
 
 # --- OPTIONAL PATHS ---
 
-# Path to CLAUDE.md for compiler step
+# Path to CLAUDE.md or AGENTS.md for compiler step. Leave empty to skip file compile.
 claude_md_path: ""
+
+# Markdown memory output used by Codex/macOS before a native memory backend exists.
+agent_memory_path: ""
+
+# Visible Obsidian index rebuilt after each harvest. Empty = vault/00-Inbox/Agent Memory Index.md.
+memory_index_path: ""
 
 # Nutstore/backup sync path (optional — for backup.py cloud sync)
 backup_path: ""
+
+# Optional proxy health check. Leave empty to skip.
+proxy:
+  host:
+  port:
+
+# Project detection. Strings are matched against transcript text and cwd.
+projects: []
+project_keywords: {}
+
+# Run the incremental scanner after SessionStart harvests missed transcripts.
+# Set false if startup hooks need to be very fast.
+scan_on_start: true
 
 # --- API CONFIGURATION (for LLM deep analysis in analyzer.py) ---
 
