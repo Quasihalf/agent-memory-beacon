@@ -1,9 +1,9 @@
-# Obsidian Knowledge Brain v2.0 — Configuration
+# Agent Memory Vault v0.3.0-personal — Configuration
 # ===============================================
 # Copy this file to config.yaml and fill in your paths.
 # config.yaml is git-ignored and never committed.
 
-version: "2.0"
+version: "0.3.0-personal"
 agent: "codex"   # codex or claude
 
 # --- REQUIRED PATHS ---

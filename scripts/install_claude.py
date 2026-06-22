@@ -12,7 +12,7 @@ from config import load_config
 
 
 HOOK_EVENTS = ("Stop", "SessionStart")
-PATCH_MARKER = "Obsidian Knowledge Brain"
+PATCH_MARKERS = ("Agent Memory Vault", "Obsidian Knowledge Brain")
 
 
 def main():
@@ -136,7 +136,7 @@ def install_claude_patch(claude_md_path, dry_run=False):
     if claude_md_path.exists():
         existing = claude_md_path.read_text(encoding="utf-8")
 
-    if PATCH_MARKER in existing:
+    if any(marker in existing for marker in PATCH_MARKERS):
         return [f"OK {claude_md_path}: patch already present"]
 
     new_content = existing.rstrip() + "\n\n" + patch_text + "\n"

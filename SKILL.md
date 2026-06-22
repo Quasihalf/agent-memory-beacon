@@ -1,31 +1,37 @@
 ---
-name: obsidian-knowledge-brain
-description: Build an Obsidian vault-based AI shared knowledge brain — a four-layer real-time evolution system where every chat session feeds into automated pattern detection, root-cause analysis, and Agent Memory sync. The brain learns from every conversation, not just counts errors. Use this whenever the user wants to set up AI knowledge management, build a shared brain, create project memory systems, organize cross-session AI learning, or mentions Obsidian vault + AI agent workflow. Also trigger on phrases like "知识管理", "共享大脑", "AI 记忆系统", "跨会话学习", "session 总结", "规则自动提取".
+name: agent-memory-vault
+description: Maintain a personal Obsidian-based memory vault for macOS Codex and Claude Code. This fork focuses on automatic transcript harvesting, Chinese-readable decision/error notes, project-aware session files, and a visible Obsidian index. Use this when setting up or debugging Codex/Claude Code conversation capture, Obsidian agent memory, session summaries, project memory, or automatic DECISION/ERROR harvesting.
 ---
 
-# Obsidian Knowledge Brain v2.0 / Obsidian 知识大脑 v2.0
+# Agent Memory Vault v0.3.0-personal
 
-> 不是错题本。是会学习的系统。
-> Not an error notebook. A learning system.
+> macOS-first personal memory layer for Codex, Claude Code, and Obsidian.
 
-## v2.0 核心升级 / What Changed from v1.0
+这个 skill 文档保留原版知识大脑的核心结构，但当前分支的实际重点是：
 
-| v1.0 (旧) | v2.0 (新) |
-|-----------|-----------|
-| 每周日跑一次 scanner | **三层触发**: Stop hook (关窗口) + SessionStart hook (开窗口) + Cron (每天深度扫描) |
-| 知识真空期: 关窗口后等 7 天才扫描 | **SessionStart hook**: 开新窗口立刻补收割，上一个窗口的教训秒级可用 |
-| 分析 = 数错误次数 | **根因分析**: 找到 WHY，不只是 HOW MANY。提炼一个原则防止所有同类错误 |
-| 审批卡片写 "(TBD)" | **具体规则文本**: 每条卡片带可直接使用的规则措辞 |
-| 规则只写 CLAUDE.md | **双路径**: CLAUDE.md + Agent Memory (跨 session 即时生效) |
-| 扫描后不知道学了什么 | **学习叙事**: 周报第一行告诉你"这周最重要的发现是..." |
+- 自动读取 Codex / Claude Code 本地 transcript。
+- 把有价值的 `[DECISION]`、`[ERROR]`、`[SESSION_SUMMARY]` 写入 Obsidian。
+- 让机器标签保持英文，正文保留中文表达。
+- 用可读 session 标题和 ignore filters 降低 Obsidian 图谱污染。
+
+## 个人分支重点 / Personal Fork Focus
+
+| Area | This fork |
+|------|-----------|
+| Runtime | macOS, Codex Desktop/CLI, Claude Code |
+| Capture | Hook-based automatic harvesting, not manual copy/paste |
+| Storage | `~/ObsidianBrain/01-Projects/<project>/Memory/` |
+| Format | English machine tags, Chinese-friendly content |
+| Routing | Optional `project:<slug>` / `scope:project` fields |
+| Safety | Obsidian link sanitization and graph ignore filters |
 
 ## 这是什么 / What Is This
 
 你和 AI 聊了几百次天。每次的决策、踩坑、解决方案——这些知识是最宝贵的。但如果没有系统化管理，它们就在聊天记录里烂掉。
 
-这个系统做一件事：**让 AI 从每一次对话中学习，下次变得更聪明。**
+这个个人分支做一件更具体的事：**让 Codex 和 Claude Code 的关键对话自动沉淀进我的 Obsidian vault。**
 
-This system does one thing: **makes the AI learn from every conversation, so it gets smarter next time.**
+It keeps the useful parts of agent conversations close to the projects they came from, without turning the vault into a raw chat dump.
 
 ## 四层进化架构 / Four-Layer Evolution Architecture
 
@@ -163,37 +169,37 @@ vault/
 
 | 脚本 | 干什么 | 关键特性 |
 |------|--------|----------|
-| `session_harvester.py` | **新增 v2.0** — Hook 收割器。`--mode stop` 收割当前 session，`--mode start` 补收割 48h 内漏网 transcript | 原子写入、幂等、离网工作 |
+| `session_harvester.py` | Codex/Claude Code Hook 收割器。`--mode stop` 收割当前 session，`--mode start` 补收割漏网 transcript | 原子写入、幂等、离网工作、Obsidian 链接清洗 |
 | `runner.py` | 管道编排器。5 步: backup → analyze → maintain → report → compile | UTF-8 强制、lock 防并发 |
-| `backup.py` | JSONL transcript → vault + Nutstore 备份。过滤 agent sub-session | 原子复制、增量检测 |
-| `analyzer.py` | **v2.0 重写** — 关键词筛选 + LLM 根因分析 + 启发式兜底。输出 learnings (根因+原则+影响+规则建议) | 三层: 关键词→LLM→启发式 |
-| `maintainer.py` | **v2.0 重写** — 智能审批卡 (带具体规则文本) + 合并检测 + 规则 reinforce/touch + 过期/晋升/清理 | 不再生成 "(TBD)" |
-| `reporter.py` | **v2.0 重写** — 周报 + "学到了什么"叙事 + growth-metrics 真实填充 + 搜索索引 + 主题地图 | 第一行就是最重要的发现 |
-| `compiler.py` | **v2.0 新增 Agent Memory 路径** — CLAUDE.md 规则表 + **Agent Memory 同步** (50+ 规则 .md 文件) | 双路径: 项目 + 跨 session |
+| `backup.py` | JSONL transcript → vault 备份。过滤 agent sub-session | 原子复制、增量检测 |
+| `analyzer.py` | 关键词筛选 + LLM 根因分析 + 启发式兜底 | 可离线运行，LLM 是增强 |
+| `maintainer.py` | 智能审批卡 + 合并检测 + 规则 reinforce/touch | 减少重复规则 |
+| `reporter.py` | 周报 + 学习叙事 + growth-metrics + 搜索索引 | 给 Obsidian 一个可读入口 |
+| `compiler.py` | CLAUDE.md/AGENTS.md 规则表 + Agent Memory 同步 | 项目记忆和跨 session 记忆并行 |
 
-## 深度分析系统 / Deep Analysis System
+## 个人版记录重点 / Personal Capture Focus
 
-### 不是计数器，是学习者 / Not a Counter, a Learner
+这个分支首先服务我的日常使用，而不是做一个泛化演示仓库。
 
-**v1.0 做的事**: 扫描 session → 发现 "R-package_package_not_found 出现 4 次" → 生成卡片 "(TBD)"
+它优先记录:
 
-**v2.0 做的事**: 扫描 session → 发现 4 个不同错误 (package_not_found, install_fail, bioc_version_mismatch, dependency_conflict) → 根因分析: **它们都源于同一个根因: R library 在 D:/R/library 不是默认路径** → 一条原则: "安装前先检查 D:/R/library" → 检查已有规则 RULE-R-002 已覆盖 → action=reinforce (强化现有规则，不重复创建) → 周报: "[CONFIRMED] R 包管理规则已验证有效 — 4 次错误, 2 个项目, 全部被正确引导到同一解决方案"
+- Codex/Claude Code 适配过程里的技术决策。
+- Obsidian vault 路径、图谱污染、链接清洗这类真实踩坑。
+- 对新会话有帮助的 session summary。
+- 跨项目对话里的显式 `project:<slug>` 路由。
 
-### 根因分析知识库 / Root-Cause Knowledge Base
+它不会优先记录:
 
-系统内置了已知根因的知识库 (`ROOT_CAUSE_KB`)，即使没有 LLM API 也能做深度分析:
+- 没有复用价值的中间聊天。
+- 原始 JSONL 的完整内容。
+- 只为了凑周报数量的重复错误。
 
-| 根因 | 原则 | 症状 |
-|------|------|------|
-| Windows R 4.5.2 颜色渲染 bug | identity-fill + svglite→rsvg 管线 | scale_fill_manual_grey, ragg_greyscale, ggsave_drop_color |
-| GFW 网络干扰 | 所有网络调用前检查代理 | ssl_error, gfw_rst, timeout, curl_ssl |
-| Windows 路径分隔符 | 始终用 / 不用 \\ | path_separator_mix, file_not_found |
-| R 包管理 (非标准路径) | 安装前检查 D:/R/library | install_fail, package_not_found |
-| 中文编码 (Windows) | 不用 Python 生成 .docx | gbk_utf8_mismatch, chinese_garbled_docx |
-| Rscript -e segfault | 写 .R 文件再 Rscript 执行 | segfault_rscript_e |
-| cBioPortal API 参数怪癖 | projection=DETAILED, entrezGeneId=int | http_400_wrong_param |
+### 示例 / Example
 
-**LLM 模式**: 当 API key 可用时，LLM 做更精细的根因聚类——能发现知识库里没有的新模式。LLM 是增强，不是必需。
+```text
+[DECISION:保留机器标签英文，内容使用中文| context:英文标签便于程序稳定解析，中文内容便于人工在 Obsidian 中阅读]
+[ERROR:type=path-filesystem| resolution=修正 Obsidian 对绝对路径 Markdown 链接的误识别，避免生成 Users/... 空文件]
+```
 
 ### 规则生命周期 / Rule Lifecycle
 
@@ -233,7 +239,7 @@ beta (30天观察期) → active (正式规则)
 ## 注意事项 / Important Notes
 
 - **Python 3.10+**，依赖: PyYAML, requests (LLM 模式)
-- **跨平台**: Windows/macOS/Linux
+- **macOS 优先**: 当前重点是 Codex Desktop/CLI 和 Claude Code 的本地 transcript
 - **不联网也能跑**: LLM 聚类是可选增强，启发式分析离线工作
 - **Obsidian 只是查看器**: vault 是纯 Markdown 文件夹，不需要 Obsidian 运行
 - **原子写入**: 所有写操作是 .tmp → os.replace，崩溃不损坏文件
@@ -242,8 +248,8 @@ beta (30天观察期) → active (正式规则)
 
 ## 引用文件 / Bundled Resources
 
-- `references/architecture.md` — v2.0 设计原理和决策记录
+- `references/architecture.md` — 设计原理和决策记录
 - `references/workflow.md` — 详细使用流程和故障排除
-- `scripts/` — 所有 Python 脚本 (v2.0 版本)
+- `scripts/` — Python 脚本
 - `templates/vault/` — Vault 模板文件
 - `patches/CLAUDE.md.patch` — CLAUDE.md Priority 0 标注规则补丁

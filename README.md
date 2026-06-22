@@ -1,55 +1,54 @@
-# Obsidian Knowledge Brain v2.0 / Obsidian 知识大脑 v2.0
+# Agent Memory Vault for Obsidian v0.3.0-personal
+
+面向 macOS、Codex 和 Claude Code 的个人自动化记忆系统。
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.0.0-orange)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+![Version](https://img.shields.io/badge/version-0.3.0--personal-orange)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Codex%20%7C%20Claude%20Code-lightgrey)
 
-> **v2.0: 不是错题本。是会学习的系统。**
-> 每次对话自动标注 → 关窗口自动收割 → 开窗口秒级同步 → 每天深度根因分析。
-> 四层进化架构，AI 真的越用越聪明。
+这个仓库是从 `obsidian-knowledge-brain` 改出来的个人自动化版本。
+我保留了它“把对话变成 Obsidian 记忆”的核心思路，但重点改成了我自己的使用场景：
 
-> **v2.0: Not an error notebook. A learning system.**
-> Every chat auto-annotated → harvested on window close → synced on window open → deep root-cause analysis daily.
-> Four-layer evolution architecture. The AI actually gets smarter.
-
----
-
-## v2.0 vs v1.0
-
-| | v1.0 | v2.0 |
-|---|------|------|
-| **触发方式** | 每周日跑一次 scanner | **四层**: Stop hook + SessionStart hook + 每天 cron + 手动收尾 |
-| **知识真空** | 关窗口后等 7 天才扫描 | **SessionStart hook**: 开新窗口秒级补收割 |
-| **分析深度** | 数错误出现次数 | **根因分析**: 找 WHY，提炼一个原则防止所有同类错误 |
-| **审批卡片** | "(TBD — refine during approval)" | 带具体规则文本，可直接使用 |
-| **规则存储** | 只写 CLAUDE.md | **双路径**: CLAUDE.md + Agent Memory (50+ 规则 .md 文件) |
-| **周报** | "6 patterns found" | "本周最重要的发现: GFW 网络干扰是 4 个错误的共同根因..." |
+- 在 macOS 上自动读取 Codex 和 Claude Code 的 JSONL 对话记录。
+- 用 hook 在对话结束或新对话开始时自动收割，不依赖手动复制。
+- 把有价值的 `[DECISION]`、`[ERROR]`、`[SESSION_SUMMARY]` 写入 Obsidian vault。
+- 为每个项目生成可读 session 标题，减少 UUID 文件名和图谱污染。
+- 保留英文机器标签，内容可以自然写中文，方便人读，也方便程序解析。
 
 ---
 
-## 四层进化架构 / Four-Layer Evolution
+## 这个分支和原版的区别
+
+| 方向 | 原版/上游 | 这个个人分支 |
+|---|---|---|
+| 主要目标 | 通用 Obsidian 知识大脑 | 我的 Codex/Claude Code 自动记忆层 |
+| 运行平台 | 泛平台说明较多 | macOS 优先，围绕 `~/.codex` 和 `~/.claude` |
+| 使用方式 | 偏框架化、可手动触发 | 默认自动化，Stop/SessionStart hook 双保险 |
+| Obsidian 输出 | 规则、周报、项目记忆 | 更强调可读 session、索引入口、图谱防污染 |
+| 标注格式 | 英文机器标签 | 标签/字段英文，正文默认可用中文 |
+| v3 取舍 | 上游 v3 偏 skill-only | 只吸收显式项目路由和最小有效记录，不放弃自动化 |
+
+---
+
+## 工作模式
 
 ```
-L1: 即时标注 → 每次决策/错误立即输出 [DECISION:] [ERROR:] (CLAUDE.md Priority 0)
-L2: Hook 收割 → Stop hook (关窗口) + SessionStart hook (开窗口) 双保险
-L3: 深度分析 → 每天 14:07 cron 全量根因分析 + 规则维护 + 周报
-L4: 手动收尾 → "收尾" 触发 neat-freak 审计
+Codex / Claude Code 对话
+    ↓
+模型在回复里写 [DECISION] / [ERROR] / [SESSION_SUMMARY]
+    ↓
+Stop hook 或 SessionStart hook 读取 JSONL transcript
+    ↓
+session_harvester.py 去重、识别项目、清洗 Obsidian 链接
+    ↓
+写入 ~/ObsidianBrain/01-Projects/<project>/Memory/
+    ↓
+刷新 00-Inbox/Agent Memory Index.md
 ```
 
-**实时闭环 / The Real-Time Loop:**
-
-```
-Session 进行 → AI 自动标注 (L1)
-    ↓
-关窗口 → Stop hook 收割 → vault + Agent Memory (L2, <2s)
-    ↓
-开新窗口 → SessionStart hook 补收割漏网之鱼 → Agent Memory 更新 (L2, <2s)
-    ↓
-AI 初始化 → 加载 CLAUDE.md + 最新 Agent Memory → 已更聪明
-    ↓
-每天 14:07 → 全量深度扫描 → 根因分析 → 规则合并 → 周报 (L3)
-```
+这不是一个“把全部聊天记录塞进 Obsidian”的工具。它更像一个过滤器：
+只把可复用的决策、已经解决的问题、会影响下次工作的总结留下来。
 
 ---
 
@@ -58,7 +57,7 @@ AI 初始化 → 加载 CLAUDE.md + 最新 Agent Memory → 已更聪明
 ### macOS + Codex
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/obsidian-knowledge-brain.git
+git clone https://github.com/2731350936/obsidian-knowledge-brain.git
 cd obsidian-knowledge-brain/scripts
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt   # PyYAML + requests (LLM mode optional)
@@ -163,52 +162,67 @@ Claude Code 仍然可以使用同一套脚本。把 `config.yaml` 里的 `agent`
 
 ---
 
-## 深度分析系统 / Deep Analysis System
+## 记录什么 / What Gets Captured
 
-### 不是计数器，是学习者
+这个分支默认只收割三类结构化内容，不把完整聊天记录直接塞进项目笔记:
 
-**v1.0**: 扫描 → "R-package_package_not_found 出现 4 次" → 卡片 "(TBD)"
-
-**v2.0**: 扫描 → 发现 4 个不同错误 (package_not_found, install_fail, bioc_version_mismatch, dependency_conflict) → **根因分析: 它们都源于 R library 在 D:/R/library 不是默认路径** → 一条原则 → 检查已有规则已覆盖 → reinforce (不重复创建) → 周报: "[CONFIRMED] R 包管理规则已验证有效"
-
-### 三层分析 / Three-Tier Analysis
-
+```text
+[DECISION:保留 hook 自动收割作为主路径| context:用户目标是自动化记录，不是手动 skill 调用| project:github-obsidian-knowledge-brain| scope:project]
+[ERROR:type=path-filesystem| resolution=修正 Obsidian 对绝对路径 Markdown 链接的误识别| project:github-obsidian-knowledge-brain]
+[SESSION_SUMMARY]
+projects: [github-obsidian-knowledge-brain]
+primary: github-obsidian-knowledge-brain
+summary: "本轮完成 macOS Codex/Claude Code 自动采集与 Obsidian 写入验证。"
+[/SESSION_SUMMARY]
 ```
-Tier 1: 启发式知识库 (ROOT_CAUSE_KB) — 离线工作，覆盖已知根因
-Tier 2: LLM 深度分析 — 发现新模式 (可选，需要 API key)
-Tier 3: 人工审查 — 标记未知模式供人审核
-```
+
+其中:
+
+- `DECISION` 记录以后还会复用的技术取舍。
+- `ERROR` 记录已经解决的问题，避免下次重复踩坑。
+- `SESSION_SUMMARY` 记录一次对话的收束信息。
+- `project` 是可选字段，用来在跨项目对话里明确归档位置。
 
 ---
 
 ## 实际效果 / What You'll See
 
-### 周报第一行就是最重要的发现
+### Obsidian 里会看到
 
 ```markdown
-## 这周学到了什么 / What We Learned
+01-Projects/github-obsidian-knowledge-brain/Memory/
+├── sessions/
+│   └── 2026-06-22-保留 hook 自动收割作为主路径.md
+├── decisions.md
+└── pitfalls.md
 
-[CONFIRMED] GFW network interference — 5 existing rules validated:
-  RULE-GIT-001 (6 errors, 3 projects), RULE-WIN-002, RULE-R-002...
+00-Inbox/
+└── Agent Memory Index.md
 ```
 
-### 审批卡片带具体规则，不是 "(TBD)"
+### Session 文件里会看到
 
 ```markdown
-# Proposed Rule: RULE-API-001
+# 保留 hook 自动收割作为主路径
 
-## Root Cause
-cBioPortal API has non-standard parameter requirements
+Session: test-session | Date: 2026-06-22 | Project: github-obsidian-knowledge-brain
 
-## Principle
-Always use projection=DETAILED, entrezGeneId=<int> for methylation,
-always client-side filter geneList results
+## Decisions
 
-## Rule Text
-1. All cBioPortal requests MUST include projection=DETAILED
-2. Methylation endpoints use entrezGeneId=<int> NOT geneList=<str>
-3. geneList filter MAY be silently ignored — always client-side filter
-4. PanCan Atlas methylation is often empty — fall back to legacy TCGA
+1. **保留 hook 自动收割作为主路径**
+   - Context: 用户目标是自动化记录，不是手动 skill 调用
+
+## Errors Encountered
+
+1. `path-filesystem`
+   - Resolution: 修正 Obsidian 对绝对路径 Markdown 链接的误识别
+```
+
+### 个人化改动
+
+```text
+上游思路: AI 对话应该沉淀成 Obsidian 知识。
+这个分支: 我的 Codex/Claude Code 对话应该自动沉淀，且不能污染 vault。
 ```
 
 ---
@@ -221,7 +235,7 @@ always client-side filter geneList results
 | **数据库** | 需要 schema 维护、AI 不能直接读写、Obsidian 打不开 |
 | **Notion/Confluence** | API 限流、需联网、知识锁在 SaaS、不跨 AI 工具 |
 | **纯 Agent Memory** | 只对当前 AI 有效。换工具不认。Markdown vault 任何工具都能读 |
-| **v1.0 (纯周扫描)** | 知识真空 7 天、分析只数数不找根因、卡片写 "(TBD)" |
+| **只保留原始 JSONL** | 信息太多，Obsidian 图谱会乱，下一轮对话也不一定会读 |
 
 ---
 
@@ -229,27 +243,27 @@ always client-side filter geneList results
 
 ```
 obsidian-knowledge-brain/
-├── SKILL.md                         ← AI 技能定义 (v2.0)
-├── README.md                        ← 本文件 / This file (v2.0)
+├── SKILL.md                         ← Agent Memory Vault 技能定义
+├── README.md                        ← 本文件 / This file
 │
 ├── scripts/                         ← 11 个 Python 脚本
 │   ├── setup.py                     ← 一键初始化
-│   ├── session_harvester.py         ← Hook 收割器 (v2.0 新增)
+│   ├── session_harvester.py         ← Codex/Claude Code Hook 收割器
 │   ├── runner.py                    ← 管道编排 (5 步)
 │   ├── backup.py                    ← JSONL 备份 + Nutstore
-│   ├── analyzer.py                  ← 根因分析 (v2.0 重写)
-│   ├── maintainer.py                ← 智能卡片 + 合并检测 (v2.0 重写)
-│   ├── reporter.py                  ← 周报 + 学习叙事 (v2.0 重写)
-│   ├── compiler.py                  ← CLAUDE.md + Agent Memory (v2.0)
+│   ├── analyzer.py                  ← 根因分析
+│   ├── maintainer.py                ← 智能卡片 + 合并检测
+│   ├── reporter.py                  ← 周报 + 学习叙事
+│   ├── compiler.py                  ← CLAUDE.md + Agent Memory
 │   ├── config.py / config.example.yaml
 │   └── requirements.txt             ← PyYAML + requests
 │
-├── references/                      ← 深入文档 (v2.0)
+├── references/                      ← 深入文档
 │   ├── architecture.md              ← 8 个设计决策 + Anti-Patterns
 │   └── workflow.md                  ← 四层工作流 + Hook 配置 + 管道
 │
 ├── templates/vault/                 ← Vault 模板
-└── patches/CLAUDE.md.patch         ← Priority 0 标注规则 (v2.0)
+└── patches/CLAUDE.md.patch         ← Codex/Claude Code 标注规则
 ```
 
 ---

@@ -1,6 +1,6 @@
 
 
-## Obsidian Knowledge Brain — Auto-Maintained Blocks
+## Agent Memory Vault — Auto-Maintained Blocks
 
 > Codex users: paste this block into `AGENTS.md`.
 > Claude Code users: paste this block into `CLAUDE.md`.
@@ -24,10 +24,10 @@
 
 ---
 
-## Session Annotation Rules (Knowledge Brain Sensory System)
+## Session Annotation Rules (Agent Memory Sensory System)
 
 > **Priority 0 — MANDATORY. NO EXCEPTIONS.**
-> These annotations feed the Obsidian knowledge brain. Every un-annotated decision is lost knowledge.
+> These annotations feed the Obsidian agent memory vault. Every un-annotated decision is lost knowledge.
 > Every un-annotated error will be repeated. You are the sensory organ. Do not starve the brain.
 
 ### [DECISION] — Appended to EVERY technical decision

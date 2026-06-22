@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive setup script for Obsidian Knowledge Brain.
+"""Interactive setup script for Agent Memory Vault.
 
 Creates the vault directory structure, prompts for paths and project names,
 generates config.yaml, copies templates, and validates everything.
@@ -146,15 +146,16 @@ def create_vault_structure(vault_path):
 
     # Write vault README.md with frontmatter
     readme_content = f"""---
-vault_version: "2.0"
+vault_version: "0.3.0-personal"
 created: {__import__('datetime').datetime.now().strftime('%Y-%m-%d')}
-vault_name: "Obsidian Knowledge Brain"
-description: "AI-human shared knowledge brain — dual-channel approval system for project memory and cross-project rules"
+vault_name: "Agent Memory Vault"
+description: "Personal Obsidian memory vault for automatically harvested Codex and Claude Code decisions, errors, and session summaries"
 ---
 
-# Obsidian Knowledge Brain
+# Agent Memory Vault
 
-> AI-human shared knowledge vault. Weekly scanner detects patterns, proposes rules, maintains indices.
+> Personal AI memory vault for Codex and Claude Code.
+> The vault stores reusable decisions, resolved errors, and session summaries instead of raw chat dumps.
 
 ## Structure
 
@@ -414,8 +415,8 @@ def validate_setup(vault_path, config_path):
 
 def main():
     print("=" * 60)
-    print("  Obsidian Knowledge Brain — Setup")
-    print("  AI-human shared knowledge vault")
+    print("  Agent Memory Vault — Setup")
+    print("  Personal Codex/Claude Code memory vault")
     print("=" * 60)
     print()
 
