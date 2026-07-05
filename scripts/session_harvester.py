@@ -24,8 +24,12 @@ from config import load_config
 from transcript_utils import (
     find_latest_transcript,
     find_recent_transcripts as find_recent_transcripts_from_config,
+    make_zcode_locator,
     parse_transcript,
+    split_zcode_locator,
 )
+from memory_judge import process_personal_memory
+from knowledge_index import rebuild_vault_knowledge_indexes
 
 # ── Configuration ──────────────────────────────────────────────
 SCANNER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -46,7 +50,7 @@ def main():
                        help="stop: harvest current transcript (Stop hook). "
                             "start: scan for unprocessed transcripts (SessionStart hook). "
                             "index: rebuild Obsidian memory index only.")
-    parser.add_argument("--agent", choices=["codex", "claude"],
+    parser.add_argument("--agent", choices=["codex", "claude", "zcode"],
                        help="override configured agent runtime for transcript discovery")
     args = parser.parse_args()
     cfg = load_config()
@@ -120,22 +124,42 @@ def process_transcript(cfg, transcript_path):
     )
     meta = extract_meta(content)
     meta.update({k: v for k, v in parsed.get("meta", {}).items() if v})
-
-    total_found = len(decisions) + len(errors) + (1 if summary else 0)
-    if total_found == 0:
-        print("[harvester] No [DECISION]/[ERROR]/[SESSION_SUMMARY] found")
-        return False
-
-    print(f"[harvester] Found: {len(decisions)} decisions, {len(errors)} errors, "
-          f"{'1 summary' if summary else 'no summary'}")
-
     ensure_obsidian_ignore_filters(cfg)
     project = detect_project(cfg, content, meta)
     session_id = generate_session_id(transcript_path, meta)
     date_str = meta.get("date", datetime.now(CST).strftime("%Y-%m-%d"))
+    memory_result = process_personal_memory(
+        cfg, parsed, project, session_id, date_str
+    )
 
-    written = write_session_to_vault(cfg, session_id, date_str, project, meta,
-                                     decisions, errors, summary)
+    total_found = (
+        len(decisions)
+        + len(errors)
+        + (1 if summary else 0)
+        + memory_result.get("candidates", 0)
+        + memory_result.get("promoted", 0)
+        + memory_result.get("formal", 0)
+        + memory_result.get("updated", 0)
+    )
+    if total_found == 0:
+        print("[harvester] No annotations or personal-memory candidates found")
+        return False
+
+    print(f"[harvester] Found: {len(decisions)} decisions, {len(errors)} errors, "
+          f"{'1 summary' if summary else 'no summary'}")
+    if any(memory_result.values()):
+        print(
+            "[harvester] Personal memory: "
+            f"{memory_result.get('candidates', 0)} candidate(s), "
+            f"{memory_result.get('formal', 0)} formal write(s), "
+            f"{memory_result.get('updated', 0)} update(s)"
+        )
+        print_personal_memory_items(memory_result)
+
+    written = 0
+    if decisions or errors or summary:
+        written = write_session_to_vault(cfg, session_id, date_str, project, meta,
+                                         decisions, errors, summary)
 
     if decisions:
         append_decisions(cfg, project, decisions, session_id, date_str)
@@ -145,7 +169,29 @@ def process_transcript(cfg, transcript_path):
     rebuild_memory_index(cfg)
 
     print(f"[harvester] Done: project={project}, session={session_id}")
-    return written > 0
+    return written > 0 or any(memory_result.values())
+
+
+def print_personal_memory_items(memory_result):
+    """Print visible personal-memory records after a harvest."""
+    labels = {
+        "candidate": "CANDIDATE",
+        "promoted": "PROMOTED",
+        "updated": "UPDATED",
+    }
+    for item in memory_result.get("items", []):
+        label = labels.get(item.get("action"), "MEMORY")
+        title = item.get("title") or item.get("content") or "untitled"
+        confidence = item.get("confidence", "")
+        seen_count = item.get("seen_count", "")
+        print(
+            f"[harvester]   [{label}] {truncate_cell(title, 120)} "
+            f"(confidence={confidence}, seen={seen_count})"
+        )
+        if item.get("content"):
+            print(f"[harvester]       {truncate_cell(item['content'], 180)}")
+        if item.get("path"):
+            print(f"[harvester]       -> {item['path']}")
 
 
 # ── SessionStart Helpers ────────────────────────────────────────
@@ -173,11 +219,23 @@ def load_processed_from_heartbeat(cfg):
 # ── Transcript Discovery ───────────────────────────────────────
 def find_transcript(cfg):
     """Find the transcript file. Try hook env vars first, then scan agent memory."""
+    zcode_db = os.environ.get("ZCODE_SESSION_DB") or os.environ.get("ZCODE_DB_PATH")
+    zcode_session = os.environ.get("ZCODE_SESSION_ID")
+    if zcode_db and zcode_session and os.path.exists(zcode_db):
+        path = make_zcode_locator(zcode_db, zcode_session)
+        print(f"[harvester] Found zcode transcript via $ZCODE_SESSION_DB/$ZCODE_SESSION_ID: {path}")
+        return path
+
     # Try all known env var names for the transcript path
     for varname in ["CODEX_TRANSCRIPT_PATH", "CODEX_SESSION_FILE",
                     "CLAUDE_TRANSCRIPT_PATH", "TRANSCRIPT_PATH",
-                    "CLAUDE_SESSION_TRANSCRIPT", "CLAUDE_TRANSCRIPT"]:
+                    "CLAUDE_SESSION_TRANSCRIPT", "CLAUDE_TRANSCRIPT",
+                    "ZCODE_TRANSCRIPT_PATH"]:
         path = os.environ.get(varname)
+        db_path, _session_id = split_zcode_locator(path)
+        if db_path and os.path.exists(db_path):
+            print(f"[harvester] Found transcript via ${varname}: {path}")
+            return path
         if path and os.path.exists(path):
             print(f"[harvester] Found transcript via ${varname}: {path}")
             return path
@@ -436,14 +494,17 @@ def write_session_to_vault(cfg, session_id, date_str, project, meta,
         print(f"[harvester] Session file already exists: {filepath} — appending new items only")
         # Read existing, merge new decisions/errors
         existing = read_existing_session(filepath)
+        existing_summary = read_existing_session_summary(filepath)
         existing_decisions = existing.get("decisions_made", [])
         existing_errors = existing.get("errors_encountered", [])
         new_decisions = merge_unique(decisions, existing_decisions, ("text", "context"))
         new_errors = merge_unique(errors, existing_errors, ("type", "resolution"))
-        if not new_decisions and not new_errors:
+        summary_changed = bool(summary) and normalize_session_summary(summary) != normalize_session_summary(existing_summary)
+        if not new_decisions and not new_errors and not summary_changed:
             return 0
         decisions = existing_decisions + new_decisions
         errors = existing_errors + new_errors
+        summary = summary if summary else existing_summary
         generated_title = existing.get("ai_title") or generated_title
 
     # Build frontmatter
@@ -470,6 +531,12 @@ def write_session_to_vault(cfg, session_id, date_str, project, meta,
     # Build body
     body_parts = [f"# {fm['ai_title']}\n"]
     body_parts.append(f"Session: {session_id} | Date: {date_str} | Project: {project}\n")
+    body_parts.append("\n## Related\n")
+    body_parts.append(f"- [[01-Projects/{project}/Memory/decisions|{project} decisions]]\n")
+    body_parts.append(f"- [[01-Projects/{project}/Memory/pitfalls|{project} pitfalls]]\n")
+    body_parts.append("- [[00-Inbox/Agent Memory Index|Agent Memory Index]]\n")
+    body_parts.append("- [[03-Maps/timeline|Timeline]]\n")
+    body_parts.append("- [[03-Maps/topic-index|Topic Index]]\n")
 
     if decisions:
         body_parts.append("\n## Decisions\n")
@@ -550,6 +617,26 @@ def read_existing_session(filepath):
     except Exception:
         pass
     return {}
+
+
+def read_existing_session_summary(filepath):
+    """Read the body Session Summary section from an existing session note."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        return None
+    match = re.search(
+        r"(?ms)^## Session Summary\s*\n(.*?)(?=^## |\Z)",
+        content,
+    )
+    if not match:
+        return None
+    return match.group(1).strip() or None
+
+
+def normalize_session_summary(summary):
+    return re.sub(r"\s+", " ", str(summary or "").strip())
 
 
 def merge_unique(new_items, existing_items, fields):
@@ -852,9 +939,13 @@ def append_decisions(cfg, project, decisions, session_id, date_str):
         return
 
     # Append to body
+    session_link = session_link_for(cfg, project, session_id, date_str)
     new_lines = []
     for d in new_decisions:
-        new_lines.append(f"- [{date_str}] **{d['text']}** | context: {d['context']} | session: {session_id}")
+        new_lines.append(
+            f"- [{date_str}] **{d['text']}** | context: {d['context']} "
+            f"| session: {session_link}"
+        )
 
     updated_body = existing_body.rstrip() + "\n" + "\n".join(new_lines) + "\n"
 
@@ -888,9 +979,13 @@ def append_errors_to_pitfalls(cfg, project, errors, session_id, date_str):
     if not new_errors:
         return
 
+    session_link = session_link_for(cfg, project, session_id, date_str)
     new_lines = []
     for e in new_errors:
-        new_lines.append(f"- [{date_str}] **{e['type']}** → {e['resolution']} | session: {session_id}")
+        new_lines.append(
+            f"- [{date_str}] **{e['type']}** → {e['resolution']} "
+            f"| session: {session_link}"
+        )
 
     updated_body = existing_body.rstrip() + "\n" + "\n".join(new_lines) + "\n"
 
@@ -923,6 +1018,20 @@ def _rewrite_project_md(filepath, key, new_items, body, session_id):
         os.replace(tmp, filepath)
     except Exception as e:
         print(f"[harvester] WARNING: Could not update {filepath}: {e}")
+
+
+def session_link_for(cfg, project, session_id, date_str):
+    sessions_dir = os.path.join(
+        cfg["vault_path"], "01-Projects", project, "Memory", "sessions"
+    )
+    filepath = find_session_file_by_id(sessions_dir, session_id, date_str)
+    if not filepath:
+        return session_id
+    rel_path = os.path.relpath(filepath, cfg["vault_path"]).replace(os.sep, "/")
+    if rel_path.endswith(".md"):
+        rel_path = rel_path[:-3]
+    label = os.path.basename(rel_path)
+    return obsidian_link(rel_path, label)
 
 
 def ensure_obsidian_ignore_filters(cfg):
@@ -1075,6 +1184,9 @@ def repair_generated_vault_markdown(cfg):
                 try:
                     with open(path, "r", encoding="utf-8") as f:
                         old = f.read()
+                    rel_path = os.path.relpath(path, vault).replace(os.sep, "/")
+                    if not is_generated_memory_note(rel_path, old):
+                        continue
                     new = sanitize_obsidian_markdown(old, cfg)
                     if new != old:
                         tmp = path + ".tmp"
@@ -1089,16 +1201,229 @@ def repair_generated_vault_markdown(cfg):
     return changed
 
 
+def is_generated_memory_note(rel_path, content):
+    """Limit repair rewrites to files owned by the knowledge-brain generator."""
+    if rel_path == "00-Inbox/Agent Memory Index.md":
+        return True
+    if re.match(r"^01-Projects/[^/]+/Memory/(decisions|pitfalls)\.md$", rel_path):
+        return True
+    if re.match(r"^01-Projects/[^/]+/Memory/sessions/[^/]+\.md$", rel_path):
+        return True
+    fm, _ = split_markdown_frontmatter(content)
+    return (
+        fm.get("harvested_by") == "session_harvester.py"
+        or fm.get("generated_by") in {
+            "session_harvester.py",
+            "memory_judge.py",
+            "knowledge_index.py",
+        }
+    )
+
+
+def repair_generated_graph_links(cfg):
+    """Add real wiki links to generated notes so Obsidian graph can connect them."""
+    vault = cfg.get("vault_path")
+    if not vault:
+        return 0
+    changed = 0
+    changed += repair_project_memory_graph_links(cfg)
+    changed += repair_personal_memory_graph_links(cfg)
+    if changed:
+        print(f"[harvester] Repaired graph links in {changed} generated note(s)")
+    return changed
+
+
+def repair_project_memory_graph_links(cfg):
+    vault = cfg["vault_path"]
+    projects_dir = os.path.join(vault, "01-Projects")
+    if not os.path.isdir(projects_dir):
+        return 0
+    changed = 0
+    for project in sorted(os.listdir(projects_dir)):
+        memory_dir = os.path.join(projects_dir, project, "Memory")
+        if not os.path.isdir(memory_dir):
+            continue
+        for filename, kind in (("decisions.md", "decisions"), ("pitfalls.md", "pitfalls")):
+            path = os.path.join(memory_dir, filename)
+            if not os.path.exists(path):
+                continue
+            old = read_text_file(path)
+            fm, body = split_markdown_frontmatter(old)
+            if body is None:
+                continue
+            new_body = ensure_project_related_section(body, project, kind)
+            new_body = relink_project_session_refs(new_body, cfg, project)
+            if new_body != body:
+                write_markdown_frontmatter(path, fm, new_body)
+                changed += 1
+    return changed
+
+
+def repair_personal_memory_graph_links(cfg):
+    vault = cfg["vault_path"]
+    settings = cfg.get("personal_memory") or {}
+    candidate_dir = os.path.join(
+        vault, settings.get("candidate_dir", "04-Feedback/_memory-candidates")
+    )
+    formal_path = os.path.join(
+        vault, settings.get("formal_path", "05-Agent-Memory/personal-memory.md")
+    )
+    changed = 0
+    if os.path.exists(formal_path):
+        old = read_text_file(formal_path)
+        fm, body = split_markdown_frontmatter(old)
+        if body is not None:
+            new_body = ensure_personal_memory_related_section(body)
+            new_body = re.sub(
+                r"- project: `([^`]+)`",
+                lambda m: f"- project: {project_decision_link(m.group(1))}",
+                new_body,
+            )
+            if new_body != body:
+                write_markdown_frontmatter(formal_path, fm, new_body)
+                changed += 1
+
+    if os.path.isdir(candidate_dir):
+        for filename in sorted(os.listdir(candidate_dir)):
+            if not filename.endswith(".md"):
+                continue
+            path = os.path.join(candidate_dir, filename)
+            old = read_text_file(path)
+            fm, body = split_markdown_frontmatter(old)
+            if body is None:
+                continue
+            new_body = ensure_candidate_related_section(body, fm)
+            if new_body != body:
+                write_markdown_frontmatter(path, fm, new_body)
+                changed += 1
+    return changed
+
+
+def ensure_project_related_section(body, project, kind):
+    if "## Related" in body:
+        return body
+    related = [
+        "## Related",
+        "",
+        "- [[00-Inbox/Agent Memory Index|Agent Memory Index]]",
+        "- [[03-Maps/timeline|Timeline]]",
+        "- [[03-Maps/topic-index|Topic Index]]",
+    ]
+    if kind == "decisions":
+        related.append(f"- [[01-Projects/{project}/Memory/pitfalls|{project} pitfalls]]")
+    else:
+        related.append(f"- [[01-Projects/{project}/Memory/decisions|{project} decisions]]")
+    return "\n".join(related) + "\n\n" + body.lstrip()
+
+
+def relink_project_session_refs(body, cfg, project):
+    lines = []
+    for line in body.splitlines():
+        if "| session: " not in line:
+            lines.append(line)
+            continue
+        prefix, session_ref = line.rsplit("| session: ", 1)
+        if "[[" in session_ref:
+            lines.append(line)
+            continue
+        date_match = re.match(r"- \[(\d{4}-\d{2}-\d{2})\]", line)
+        if not date_match:
+            lines.append(line)
+            continue
+        session_id = session_ref.strip()
+        session_link = session_link_for(cfg, project, session_id, date_match.group(1))
+        lines.append(f"{prefix}| session: {session_link}")
+    return "\n".join(lines) + ("\n" if body.endswith("\n") else "")
+
+
+def ensure_personal_memory_related_section(body):
+    if "## Related" in body:
+        return body
+    related = (
+        "## Related\n\n"
+        "- [[00-Inbox/Agent Memory Index|Agent Memory Index]]\n"
+        "- [[03-Maps/timeline|Timeline]]\n"
+        "- [[03-Maps/topic-index|Topic Index]]\n\n"
+    )
+    return body.replace(
+        "Promoted memories from repeated or high-confidence conversations.\n",
+        "Promoted memories from repeated or high-confidence conversations.\n\n"
+        + related,
+        1,
+    )
+
+
+def ensure_candidate_related_section(body, fm):
+    if "## Related" in body:
+        return body
+    project = fm.get("project", "")
+    links = [
+        "- [[00-Inbox/Agent Memory Index|Agent Memory Index]]",
+        "- [[05-Agent-Memory/personal-memory|Personal Memory]]",
+    ]
+    if project:
+        links.extend(
+            [
+                f"- {project_decision_link(project)}",
+                f"- [[01-Projects/{project}/Memory/pitfalls|{project} pitfalls]]",
+            ]
+        )
+    related = "## Related\n\n" + "\n".join(links) + "\n\n"
+    if "\n## Evidence\n" in body:
+        return body.replace("\n## Evidence\n", "\n" + related + "## Evidence\n", 1)
+    return body.rstrip() + "\n\n" + related
+
+
+def project_decision_link(project):
+    if not project:
+        return "`unknown`"
+    return f"[[01-Projects/{project}/Memory/decisions|{project}]]"
+
+
+def read_text_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+def split_markdown_frontmatter(content):
+    if not content.startswith("---"):
+        return {}, None
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return {}, None
+    try:
+        fm = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        fm = {}
+    return fm, parts[2].lstrip("\n")
+
+
+def write_markdown_frontmatter(path, fm, body):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write("---\n")
+        yaml.dump(fm, handle, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        handle.write("---\n\n")
+        handle.write(body.rstrip() + "\n")
+    os.replace(tmp, path)
+
+
 # ── Global Memory Index ────────────────────────────────────────
 def rebuild_memory_index(cfg):
     """Rebuild a visible Obsidian index of harvested sessions, decisions, and errors."""
     ensure_obsidian_ignore_filters(cfg)
     repair_generated_vault_markdown(cfg)
+    repair_generated_graph_links(cfg)
     vault = cfg["vault_path"]
     index_path = cfg.get("memory_index_path") or os.path.join(
         vault, "00-Inbox", "Agent Memory Index.md"
     )
     sessions = collect_harvested_sessions(vault)
+    personal_memory = collect_personal_memory(vault, cfg)
+    knowledge_indexes = rebuild_vault_knowledge_indexes(cfg)
 
     sessions.sort(
         key=lambda item: (
@@ -1111,6 +1436,8 @@ def rebuild_memory_index(cfg):
 
     decision_count = sum(len(item.get("decisions_made", [])) for item in sessions)
     error_count = sum(len(item.get("errors_encountered", [])) for item in sessions)
+    candidate_count = len(personal_memory.get("candidates", []))
+    formal_count = 1 if personal_memory.get("formal_exists") else 0
     updated_at = datetime.now(CST).isoformat()
 
     fm = {
@@ -1120,6 +1447,13 @@ def rebuild_memory_index(cfg):
         "session_count": len(sessions),
         "decision_count": decision_count,
         "error_count": error_count,
+        "personal_memory_candidates": candidate_count,
+        "personal_memory_files": formal_count,
+        "keyword_index_terms": knowledge_indexes.get("keyword_terms", 0),
+        "global_atoms": knowledge_indexes.get("global_atoms", 0),
+        "recall_units": knowledge_indexes.get("recall_units", 0),
+        "graph_nodes": knowledge_indexes.get("graph_nodes", 0),
+        "graph_edges": knowledge_indexes.get("graph_edges", 0),
     }
 
     body = []
@@ -1178,6 +1512,49 @@ def rebuild_memory_index(cfg):
             f"{escape_table_cell(resolution)} | {link} |"
         )
 
+    body.append("\n## Personal Memory\n")
+    formal_rel = personal_memory.get("formal_rel")
+    if formal_rel:
+        body.append(f"- Formal memory: {obsidian_link(formal_rel, 'Personal Memory')}")
+    else:
+        body.append("- Formal memory: not created yet")
+    body.append(f"- Candidates waiting for repetition: {candidate_count}")
+    if personal_memory.get("candidates"):
+        body.append("\n### Memory Candidates\n")
+        body.append("| Seen | Confidence | Type | Candidate |")
+        body.append("|---:|---:|---|---|")
+        for record in personal_memory["candidates"][:20]:
+            body.append(
+                "| {seen} | {confidence} | `{kind}` | {link} |".format(
+                    seen=record.get("seen_count", ""),
+                    confidence=record.get("confidence", ""),
+                    kind=escape_table_cell(record.get("type", "")),
+                    link=obsidian_link(
+                        record["rel_path"],
+                        record.get("title") or record["filename"],
+                    ),
+                )
+            )
+
+    body.append("\n## Machine Indexes\n")
+    body.append(
+        f"- Keyword index terms: `{knowledge_indexes.get('keyword_terms', 0)}` "
+        "([[05-Agent-Memory/keyword-index|Keyword Index]])"
+    )
+    body.append(
+        f"- Global atoms: `{knowledge_indexes.get('global_atoms', 0)}` "
+        "([[05-Agent-Memory/global-atoms|Global Atoms]])"
+    )
+    body.append(
+        f"- Recall units: `{knowledge_indexes.get('recall_units', 0)}` "
+        "([[05-Agent-Memory/recall-context|Recall Context]])"
+    )
+    body.append(
+        f"- Memory graph: `{knowledge_indexes.get('graph_nodes', 0)}` nodes / "
+        f"`{knowledge_indexes.get('graph_edges', 0)}` edges "
+        "(`05-Agent-Memory/memory-graph.json`)"
+    )
+
     content = "---\n"
     content += yaml.dump(fm, allow_unicode=True, default_flow_style=False, sort_keys=False)
     content += "---\n\n"
@@ -1215,6 +1592,48 @@ def collect_harvested_sessions(vault):
             fm["rel_path"] = rel_path[:-3] if rel_path.endswith(".md") else rel_path
             sessions.append(fm)
     return sessions
+
+
+def collect_personal_memory(vault, cfg):
+    """Collect personal-memory candidate/formal files for the visible index."""
+    settings = cfg.get("personal_memory") or {}
+    candidate_dir = os.path.join(
+        vault, settings.get("candidate_dir", "04-Feedback/_memory-candidates")
+    )
+    formal_path = os.path.join(
+        vault, settings.get("formal_path", "05-Agent-Memory/personal-memory.md")
+    )
+    candidates = []
+    if os.path.isdir(candidate_dir):
+        for filename in sorted(os.listdir(candidate_dir)):
+            if not filename.endswith(".md"):
+                continue
+            path = os.path.join(candidate_dir, filename)
+            fm = read_existing_session(path)
+            if not fm or fm.get("status") == "promoted":
+                continue
+            rel_path = os.path.relpath(path, vault).replace(os.sep, "/")
+            fm["filename"] = filename
+            fm["rel_path"] = rel_path[:-3] if rel_path.endswith(".md") else rel_path
+            candidates.append(fm)
+    candidates.sort(
+        key=lambda item: (
+            int(item.get("seen_count") or 0),
+            float(item.get("confidence") or 0),
+            str(item.get("last_seen") or ""),
+        ),
+        reverse=True,
+    )
+    formal_rel = None
+    if os.path.exists(formal_path):
+        formal_rel = os.path.relpath(formal_path, vault).replace(os.sep, "/")
+        if formal_rel.endswith(".md"):
+            formal_rel = formal_rel[:-3]
+    return {
+        "formal_exists": bool(formal_rel),
+        "formal_rel": formal_rel,
+        "candidates": candidates,
+    }
 
 
 def obsidian_link(path_without_ext, label):

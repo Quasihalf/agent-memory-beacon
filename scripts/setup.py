@@ -59,6 +59,9 @@ def detect_defaults():
     codex_home = os.path.join(home, ".codex")
     defaults['codex_home'] = codex_home
     defaults['codex_sessions_path'] = os.path.join(codex_home, "sessions")
+    zcode_home = os.path.join(home, ".zcode")
+    defaults['zcode_home'] = zcode_home
+    defaults['zcode_db_path'] = os.path.join(zcode_home, "cli", "db", "db.sqlite")
 
     # Claude project path (kept for compatibility)
     claude_projects = os.path.join(home, ".claude", "projects")
@@ -434,13 +437,18 @@ def main():
         vault_path = defaults['vault_path']
 
     agent = prompt(
-        "Agent runtime (codex/claude)",
+        "Agent runtime (codex/claude/zcode)",
         "codex"
     ).lower()
 
     codex_sessions_path = prompt(
         "Codex sessions directory",
         defaults['codex_sessions_path']
+    )
+
+    zcode_db_path = prompt(
+        "ZCode SQLite DB path",
+        defaults.get('zcode_db_path', '')
     )
 
     claude_project_path = prompt(
@@ -510,6 +518,7 @@ def main():
     print(f"  Vault path:        {vault_path}")
     print(f"  Agent runtime:     {agent}")
     print(f"  Codex sessions:    {codex_sessions_path}")
+    print(f"  ZCode DB:          {zcode_db_path or '(not set)'}")
     print(f"  Claude projects:   {claude_project_path or '(not set)'}")
     print(f"  Python:            {python_path}")
     print(f"  Compile target:    {claude_md_path or '(not set)'}")
@@ -539,18 +548,30 @@ def main():
 
     # Step 8: Generate config.yaml
     config = {
-        'version': '2.0',
+        'version': '0.3.0-personal',
         'agent': agent,
         'vault_path': vault_path,
         'codex_home': defaults['codex_home'],
         'codex_sessions_path': codex_sessions_path,
+        'zcode_home': defaults['zcode_home'],
+        'zcode_db_path': zcode_db_path,
         'claude_project_path': claude_project_path,
         'claude_md_path': claude_md_path,
         'agent_memory_path': agent_memory_path,
+        'codex_profile_path': os.path.join(agent_memory_path, 'codex-profile'),
         'python_path': python_path,
         'projects': created if project_names else [],
         'project_keywords': {},
         'scan_on_start': True,
+        'personal_memory': {
+            'enabled': True,
+            'candidate_dir': '04-Feedback/_memory-candidates',
+            'formal_path': '05-Agent-Memory/personal-memory.md',
+            'candidate_threshold': 0.45,
+            'direct_threshold': 0.85,
+            'promote_seen_count': 2,
+            'similarity_threshold': 0.5,
+        },
         'api': {
             'settings_json': settings_json,
             'base_url': None,

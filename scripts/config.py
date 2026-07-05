@@ -15,16 +15,27 @@ def load_config():
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f) or {}
 
-    cfg.setdefault('version', '2.0')
+    cfg.setdefault('version', '0.3.0-personal')
     cfg.setdefault('agent', 'codex')
     cfg.setdefault('python_path', sys.executable)
     cfg.setdefault('codex_home', os.path.join('~', '.codex'))
     cfg.setdefault('codex_sessions_path', os.path.join(cfg['codex_home'], 'sessions'))
+    cfg.setdefault('zcode_home', os.path.join('~', '.zcode'))
+    cfg.setdefault('zcode_db_path', os.path.join(cfg['zcode_home'], 'cli', 'db', 'db.sqlite'))
     cfg.setdefault('claude_project_path', '')
     cfg.setdefault('claude_md_path', '')
     cfg.setdefault('agent_memory_path', os.path.join(cfg['vault_path'], '05-Agent-Memory') if cfg.get('vault_path') else '')
     cfg.setdefault('memory_index_path', os.path.join(cfg['vault_path'], '00-Inbox', 'Agent Memory Index.md') if cfg.get('vault_path') else '')
+    cfg.setdefault('codex_profile_path', os.path.join(cfg['agent_memory_path'], 'codex-profile') if cfg.get('agent_memory_path') else '')
     cfg.setdefault('scan_on_start', True)
+    cfg.setdefault('personal_memory', {})
+    cfg['personal_memory'].setdefault('enabled', True)
+    cfg['personal_memory'].setdefault('candidate_dir', '04-Feedback/_memory-candidates')
+    cfg['personal_memory'].setdefault('formal_path', '05-Agent-Memory/personal-memory.md')
+    cfg['personal_memory'].setdefault('candidate_threshold', 0.45)
+    cfg['personal_memory'].setdefault('direct_threshold', 0.85)
+    cfg['personal_memory'].setdefault('promote_seen_count', 2)
+    cfg['personal_memory'].setdefault('similarity_threshold', 0.5)
 
     for key in [
         'vault_path',
@@ -33,8 +44,11 @@ def load_config():
         'backup_path',
         'codex_home',
         'codex_sessions_path',
+        'zcode_home',
+        'zcode_db_path',
         'agent_memory_path',
         'memory_index_path',
+        'codex_profile_path',
     ]:
         if key in cfg and cfg[key]:
             cfg[key] = _expand(cfg[key])
@@ -59,6 +73,7 @@ def load_config():
     # setup flows because the user may create it after first launch.
     transcript_roots = [
         cfg.get('codex_sessions_path'),
+        cfg.get('zcode_db_path'),
         cfg.get('claude_project_path'),
         *(cfg.get('transcript_paths') or []),
     ]
