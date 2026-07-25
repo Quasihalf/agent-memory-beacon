@@ -1,5 +1,6 @@
 ---
 project: "{project-alpha}"
+schema_version: "2.0"
 last_updated: "{YYYY-MM-DD}"
 decisions: []
 ---

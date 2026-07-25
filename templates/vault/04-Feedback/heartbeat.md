@@ -3,6 +3,8 @@ last_scan: null
 scan_status: "pending"
 sessions_processed: 0
 processed_sessions: {}
+backed_up_sessions: {}
+harvested_sessions: {}
 errors: []
 script_version: "1.0.0"
 ---

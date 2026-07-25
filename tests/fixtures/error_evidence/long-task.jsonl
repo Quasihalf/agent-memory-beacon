@@ -1,0 +1,12 @@
+{"timestamp":"2026-07-13T02:00:00Z","type":"session_meta","payload":{"id":"error-evidence-long-task","agent":"codex","cwd":"/tmp/error-evidence-eval","timestamp":"2026-07-13T02:00:00Z"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"expected-red-fail","name":"exec_command","arguments":"{\"cmd\":\"python -m unittest tests.test_expected_red\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"expected-red-fail","output":"{\"exit_code\":1,\"output\":\"expectedredfixturetoken password=fixture-secret assertion failed\"}"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"expected-red-pass","name":"exec_command","arguments":"{\"cmd\":\"python -m unittest tests.test_expected_red\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"expected-red-pass","output":"{\"exit_code\":0,\"output\":\"expectedredfixturetoken OK\"}"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"transient-fail","name":"exec_command","arguments":"{\"cmd\":\"git status --short\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"transient-fail","output":"{\"exit_code\":1,\"output\":\"transientfixturetoken temporary failure\"}"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"transient-pass","name":"exec_command","arguments":"{\"cmd\":\"git status --short\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"transient-pass","output":"{\"exit_code\":0,\"output\":\"transientfixturetoken recovered\"}"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"terminal-fail","name":"exec_command","arguments":"{\"cmd\":\"cat missing-eval-file\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"terminal-fail","output":"{\"exit_code\":1,\"output\":\"terminalfixturetoken password=terminal-secret file remains missing\"}"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"<subagent_notification>{\"status\":{\"reviewer\":{\"completed\":\"### Important: reviewfixturetoken missing final drift validation token=review-secret\"}}}</subagent_notification>"}}

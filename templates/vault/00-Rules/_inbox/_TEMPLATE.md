@@ -1,5 +1,5 @@
 ---
-status: "proposed"
+status: "pending"
 proposed: "{YYYY-MM-DD}"
 proposed_by: "scanner"
 confidence_auto: 0.0

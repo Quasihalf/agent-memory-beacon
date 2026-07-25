@@ -9,6 +9,15 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from branding import default_vault_path
+from context_install import (
+    atomic_write_utf8_text_exact,
+    extract_managed_patch,
+    load_managed_patch,
+    merge_managed_patch,
+    read_utf8_text_exact,
+)
+
 
 SKILLS_MANIFEST = "skills-manifest.json"
 PLUGINS_MANIFEST = "plugins-manifest.json"
@@ -44,6 +53,10 @@ SKIP_SKILL_DIRS = {
     ".system",
     "__pycache__",
 }
+MANAGED_AGENT_BLOCKS = (
+    ("<!-- COMPILED:RULES_START -->", "<!-- COMPILED:RULES_END -->"),
+    ("<!-- COMPILED:PROJECTS_START -->", "<!-- COMPILED:PROJECTS_END -->"),
+)
 
 
 def export_profile(codex_home, profile_dir, include_config=False):
@@ -51,10 +64,18 @@ def export_profile(codex_home, profile_dir, include_config=False):
     codex_home = _path(codex_home)
     profile_dir = _path(profile_dir)
     _ensure_profile_dir_safe(codex_home, profile_dir)
+    source_agents = codex_home / "AGENTS.md"
+    shared_agents = profile_dir / SHARED_AGENTS
+    prepared_agents = _prepare_agents_copy(source_agents, shared_agents)
+
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     skills = _export_skills(codex_home / "skills", profile_dir / "skills")
-    agents_exported = _copy_agents(codex_home / "AGENTS.md", profile_dir / SHARED_AGENTS)
+    agents_exported = _copy_agents(
+        source_agents,
+        shared_agents,
+        prepared_agents=prepared_agents,
+    )
 
     config_text = ""
     config_exported = False
@@ -102,6 +123,7 @@ def apply_profile(profile_dir, codex_home, include_config=False, overwrite=False
     """Apply a safe Codex profile to a target Codex home."""
     profile_dir = _path(profile_dir)
     codex_home = _path(codex_home)
+    _ensure_profile_dir_safe(codex_home, profile_dir)
     if not dry_run:
         codex_home.mkdir(parents=True, exist_ok=True)
 
@@ -149,6 +171,8 @@ def status_profile(profile_dir, codex_home):
             "missing_skills": [],
             "present_skills": [],
             "changed_skills": [],
+            "agents_missing": False,
+            "agents_changed": False,
             "missing_plugins": [],
             "present_plugins": [],
             "missing_plugin_cache": [],
@@ -176,6 +200,15 @@ def status_profile(profile_dir, codex_home):
         else:
             present_skills.append(skill.get("name"))
 
+    shared_agents = profile_dir / SHARED_AGENTS
+    target_agents = codex_home / "AGENTS.md"
+    agents_missing = shared_agents.exists() and not target_agents.exists()
+    agents_changed = (
+        shared_agents.exists()
+        and target_agents.exists()
+        and _file_digest(shared_agents) != _file_digest(target_agents)
+    )
+
     target_config = codex_home / "config.toml"
     enabled_plugins = _parse_enabled_plugin_ids(
         target_config.read_text(encoding="utf-8") if target_config.exists() else ""
@@ -199,6 +232,8 @@ def status_profile(profile_dir, codex_home):
         "missing_skills": missing_skills,
         "present_skills": present_skills,
         "changed_skills": changed_skills,
+        "agents_missing": agents_missing,
+        "agents_changed": agents_changed,
         "missing_plugins": missing_plugins,
         "present_plugins": present_plugins,
         "missing_plugin_cache": missing_plugin_cache,
@@ -207,6 +242,123 @@ def status_profile(profile_dir, codex_home):
             "auth.json, token files, sessions, logs, and plugin cache payloads are intentionally not applied.",
         ],
     }
+
+
+def sync_profile_agents_managed_blocks(source_agents, profile_dir, dry_run=False):
+    """Refresh compiler-owned blocks without replacing the shared preamble."""
+    source_agents = _path(source_agents)
+    shared_agents = _path(profile_dir) / SHARED_AGENTS
+    if not source_agents.exists() or not shared_agents.exists():
+        return False
+
+    source = read_utf8_text_exact(source_agents)
+    shared = read_utf8_text_exact(shared_agents)
+    source_current = _normalized_source_managed_block(source)
+    updated = _replace_or_install_managed_block(shared, source_current)
+
+    if updated == shared or dry_run:
+        return False
+    _atomic_write_text(shared_agents, updated)
+    return True
+
+
+def sync_profile_agents_compiled_blocks(
+    profile_dir,
+    rules_text,
+    projects_text,
+    dry_run=False,
+):
+    """Refresh shared profile blocks directly from one compiler result."""
+    shared_agents = _path(profile_dir) / SHARED_AGENTS
+    if not shared_agents.exists():
+        return False
+    shared = read_utf8_text_exact(shared_agents)
+    shared_block = extract_managed_patch(shared)
+    if shared_block is None:
+        managed = load_managed_patch()
+        for (start, end), body in zip(
+            MANAGED_AGENT_BLOCKS,
+            (rules_text, projects_text),
+        ):
+            managed = _replace_marked_block(
+                managed,
+                start,
+                end,
+                "\n" + str(body).strip("\n") + "\n",
+            )
+        updated = _replace_or_install_managed_block(shared, managed)
+    else:
+        updated = shared
+        for (start, end), body in zip(
+            MANAGED_AGENT_BLOCKS,
+            (rules_text, projects_text),
+        ):
+            if _marked_block(updated, start, end) is None:
+                return False
+            updated = _replace_marked_block(
+                updated,
+                start,
+                end,
+                "\n" + str(body).strip("\n") + "\n",
+            )
+        updated = _replace_or_install_managed_block(
+            shared,
+            _normalized_source_managed_block(updated),
+        )
+
+    if updated == shared or dry_run:
+        return False
+    _atomic_write_text(shared_agents, updated)
+    return True
+
+
+def _marked_block(content, start, end):
+    start_index = content.find(start)
+    end_index = content.find(end, start_index + len(start))
+    if start_index < 0 or end_index < 0:
+        return None
+    return content[start_index + len(start):end_index]
+
+
+def _whole_marked_block(content, start, end):
+    start_index = content.find(start)
+    end_index = content.find(end, start_index + len(start))
+    if start_index < 0 or end_index < 0:
+        return None
+    return content[start_index:end_index + len(end)]
+
+
+def _replace_marked_block(content, start, end, body):
+    start_index = content.index(start) + len(start)
+    end_index = content.index(end, start_index)
+    return content[:start_index] + body + content[end_index:]
+
+
+def _normalized_source_managed_block(source):
+    """Return the canonical managed block with source compiler bodies."""
+    source_block = extract_managed_patch(source)
+    if source_block is not None:
+        normalized, _ = merge_managed_patch(source_block, load_managed_patch())
+        return normalized.strip()
+
+    normalized, _ = merge_managed_patch("", load_managed_patch())
+    for start, end in MANAGED_AGENT_BLOCKS:
+        source_body = _marked_block(source, start, end)
+        if source_body is not None:
+            normalized = _replace_marked_block(normalized, start, end, source_body)
+    return normalized.strip()
+
+
+def _replace_or_install_managed_block(target, managed_block):
+    """Replace only a known managed substring, preserving target text exactly."""
+    target_block = extract_managed_patch(target)
+    if target_block is not None:
+        start = target.index(target_block)
+        end = start + len(target_block)
+        return target[:start] + managed_block + target[end:]
+    if target:
+        return target + "\n\n" + managed_block
+    return managed_block
 
 
 def default_codex_home():
@@ -222,7 +374,7 @@ def default_profile_dir():
         return Path(cfg["agent_memory_path"]).expanduser() / "codex-profile"
     if cfg.get("vault_path"):
         return Path(cfg["vault_path"]).expanduser() / "05-Agent-Memory" / "codex-profile"
-    return Path.home() / "ObsidianBrain" / "05-Agent-Memory" / "codex-profile"
+    return default_vault_path() / "05-Agent-Memory" / "codex-profile"
 
 
 def _export_skills(source_dir, target_dir):
@@ -276,15 +428,20 @@ def _apply_skills(source_dir, target_dir, overwrite, dry_run=False):
 
 
 def _is_exportable_skill(skill_dir):
-    if skill_dir.name in SKIP_SKILL_DIRS or skill_dir.name.startswith("."):
+    if (
+        skill_dir.is_symlink()
+        or skill_dir.name in SKIP_SKILL_DIRS
+        or skill_dir.name.startswith(".")
+    ):
         return False
-    return (skill_dir / "SKILL.md").exists()
+    skill_file = skill_dir / "SKILL.md"
+    return skill_file.is_file() and not skill_file.is_symlink()
 
 
-def _ignore_export_files(_directory, names):
+def _ignore_export_files(directory, names):
     ignored = set()
     for name in names:
-        if _should_ignore_export_name(name):
+        if _should_ignore_export_name(name) or (Path(directory) / name).is_symlink():
             ignored.add(name)
     return ignored
 
@@ -300,19 +457,35 @@ def _should_ignore_export_name(name):
     return any(fragment in lowered for fragment in SENSITIVE_NAME_FRAGMENTS)
 
 
-def _copy_agents(source, destination):
+def _prepare_agents_copy(source, destination):
     if not source.exists():
+        return False, None
+    source_text = read_utf8_text_exact(source)
+    source_current = _normalized_source_managed_block(source_text)
+    target_text = (
+        read_utf8_text_exact(destination) if destination.exists() else source_text
+    )
+    return True, _replace_or_install_managed_block(target_text, source_current)
+
+
+def _copy_agents(source, destination, prepared_agents=None):
+    if prepared_agents is None:
+        prepared_agents = _prepare_agents_copy(source, destination)
+    source_exists, updated = prepared_agents
+    if not source_exists:
         if destination.exists():
             destination.unlink()
         return False
-    _atomic_write_text(destination, source.read_text(encoding="utf-8"))
+    target_text = read_utf8_text_exact(destination) if destination.exists() else None
+    if updated != target_text:
+        _atomic_write_text(destination, updated)
     return True
 
 
 def _apply_agents(source, destination, dry_run=False):
     if not source.exists():
         return False
-    content = source.read_text(encoding="utf-8")
+    content = read_utf8_text_exact(source)
     if not dry_run:
         _backup_if_changed(destination, content)
         _atomic_write_text(destination, content)
@@ -491,7 +664,10 @@ def _skill_digest(skill_dir):
     digest = hashlib.sha256()
     if not skill_dir.exists():
         return ""
-    for path in sorted(item for item in skill_dir.rglob("*") if item.is_file()):
+    for path in sorted(
+        item for item in skill_dir.rglob("*")
+        if item.is_file() and not item.is_symlink()
+    ):
         rel_parts = path.relative_to(skill_dir).parts
         if any(_should_ignore_export_name(part) for part in rel_parts):
             continue
@@ -504,6 +680,13 @@ def _skill_digest(skill_dir):
             continue
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _file_digest(path):
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _load_json(path, fallback):
@@ -524,17 +707,14 @@ def _atomic_write_json(path, data):
 
 
 def _atomic_write_text(path, content):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_utf8_text_exact(path, content)
 
 
 def _backup_if_changed(path, new_content):
     if not path.exists():
         return
     try:
-        if path.read_text(encoding="utf-8") == new_content:
+        if read_utf8_text_exact(path) == new_content:
             return
     except OSError:
         return
@@ -553,12 +733,13 @@ def _backup_path(path):
 
 
 def _load_runtime_config():
-    try:
-        from config import load_config
+    import config
 
-        return load_config()
-    except Exception:
+    try:
+        Path(config.CONFIG_PATH).lstat()
+    except FileNotFoundError:
         return {}
+    return config.load_config()
 
 
 def _path(value):
@@ -568,8 +749,14 @@ def _path(value):
 def _ensure_profile_dir_safe(codex_home, profile_dir):
     codex_home = _resolved(codex_home)
     profile_dir = _resolved(profile_dir)
-    if profile_dir == codex_home or _is_relative_to(profile_dir, codex_home):
-        raise ValueError("profile_dir must be outside codex_home to avoid destructive overlap")
+    if (
+        profile_dir == codex_home
+        or _is_relative_to(profile_dir, codex_home)
+        or _is_relative_to(codex_home, profile_dir)
+    ):
+        raise ValueError(
+            "profile_dir and codex_home must not overlap"
+        )
 
 
 def _same_path(left, right):
@@ -641,6 +828,12 @@ def _print_human(command, result):
             print("Profile status: missing")
         print(f"Missing skills: {', '.join(result['missing_skills']) or 'none'}")
         print(f"Changed skills: {', '.join(result.get('changed_skills', [])) or 'none'}")
+        agents_status = (
+            "missing" if result.get("agents_missing")
+            else "changed" if result.get("agents_changed")
+            else "current"
+        )
+        print(f"Shared AGENTS.md: {agents_status}")
         print(f"Missing enabled plugins: {', '.join(result['missing_plugins']) or 'none'}")
         print(f"Missing plugin cache: {', '.join(result.get('missing_plugin_cache', [])) or 'none'}")
         for note in result["notes"]:

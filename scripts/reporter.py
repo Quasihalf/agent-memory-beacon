@@ -5,6 +5,8 @@ import json
 import tempfile
 from datetime import datetime
 
+from safety import exclusive_file_lock, split_frontmatter_text
+
 def run(cfg, dry_run=False, step_results=None, missed_weeks=0):
     vault = cfg['vault_path']
     week = datetime.now().strftime('%Y-W%W')
@@ -27,6 +29,16 @@ def run(cfg, dry_run=False, step_results=None, missed_weeks=0):
     sessions_scanned = analyze.get('sessions_scanned', 0)
     sessions_total = count_session_files(vault)
     processed_sessions = backup.get('processed_ids', {})
+    pipeline_errors = []
+    for step, result in (step_results or {}).items():
+        if not isinstance(result, dict):
+            continue
+        for key, value in result.items():
+            if value and (key == 'error' or key.endswith('_error')):
+                pipeline_errors.append(f"{step}.{key}: {value}")
+    scan_status = 'degraded' if pipeline_errors else 'ok'
+    if backup.get('error'):
+        processed_sessions = None
 
     # ── Compute real metrics ──
     repeat_rate = compute_repeat_error_rate(vault, analyze)
@@ -68,7 +80,7 @@ def run(cfg, dry_run=False, step_results=None, missed_weeks=0):
     report_content = f"""---
 week: "{week}"
 date: {datetime.now().strftime('%Y-%m-%d')}
-scan_status: ok
+scan_status: {scan_status}
 sessions_scanned: {sessions_scanned}
 sessions_total: {sessions_total}
 new_patterns_detected: {len(patterns)}
@@ -78,7 +90,7 @@ rules_awaiting_approval: {inbox_count}
 rules_archived_this_week: {archived}
 missed_weeks: {missed_weeks}
 repeat_error_rate: {repeat_rate:.3f}
-heartbeat_ok: true
+heartbeat_ok: {str(scan_status == 'ok').lower()}
 ---
 
 # Weekly Report {week}
@@ -129,7 +141,13 @@ heartbeat_ok: true
         rebuild_maps(vault)
 
         # Update heartbeat with processed_sessions for incremental scan
-        update_heartbeat(vault, sessions_scanned, processed_sessions)
+        update_heartbeat(
+            vault,
+            sessions_scanned,
+            processed_sessions,
+            scan_status=scan_status,
+            errors=pipeline_errors,
+        )
     else:
         # Dry-run: still validate paths, don't write
         pass
@@ -170,7 +188,10 @@ def compute_rule_hit_rates(vault, analyze):
         import yaml
         with open(taxonomy_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        taxonomy = yaml.safe_load(content.split('---')[1])
+        frontmatter_text, _body = split_frontmatter_text(content)
+        if frontmatter_text is None:
+            return {}
+        taxonomy = yaml.safe_load(frontmatter_text)
         for cat in taxonomy.get('categories', []):
             cat_name = cat.get('name', 'unknown')
             for sub in cat.get('subcategories', []):
@@ -300,12 +321,23 @@ def generate_highlight(patterns, cards, archived, sessions_scanned):
         parts.append(f"Scanner processed {sessions_scanned} sessions. No new patterns detected — system is stable.")
     return '; '.join(parts)
 
-def atomic_write(filepath, content):
+def _check_ownership(ownership_check):
+    if ownership_check is not None:
+        ownership_check()
+
+
+def atomic_write(filepath, content, ownership_check=None, mutation_io=None):
     """Write content to file atomically: write to .tmp then os.rename."""
-    tmp_path = filepath + '.tmp'
-    with open(tmp_path, 'w', encoding='utf-8') as f:
-        f.write(content)
-    os.replace(tmp_path, filepath)  # os.replace is atomic on Windows
+    _check_ownership(ownership_check)
+    if mutation_io is not None:
+        mutation_io.atomic_write(filepath, content, encoding="utf-8")
+    else:
+        tmp_path = filepath + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        _check_ownership(ownership_check)
+        os.replace(tmp_path, filepath)  # os.replace is atomic on Windows
+    _check_ownership(ownership_check)
 
 def count_session_files(vault):
     """Count total session summary .md files across all projects."""
@@ -332,7 +364,10 @@ def count_pending_inbox(vault):
         try:
             with open(fp, 'r', encoding='utf-8') as fh:
                 content = fh.read()
-            fm = yaml.safe_load(content.split('---')[1])
+            frontmatter_text, _body = split_frontmatter_text(content)
+            if frontmatter_text is None:
+                continue
+            fm = yaml.safe_load(frontmatter_text)
             if fm.get('status') == 'pending':
                 count += 1
         except (yaml.YAMLError, IndexError):
@@ -357,7 +392,10 @@ def rebuild_search_index(vault):
             with open(fp, 'r', encoding='utf-8') as fh:
                 content = fh.read()
             try:
-                fm = yaml.safe_load(content.split('---')[1])
+                frontmatter_text, _body = split_frontmatter_text(content)
+                if frontmatter_text is None:
+                    continue
+                fm = yaml.safe_load(frontmatter_text)
             except (yaml.YAMLError, IndexError):
                 continue
 
@@ -386,44 +424,79 @@ def rebuild_search_index(vault):
 
     atomic_write(index_path, index_content)
 
-def update_heartbeat(vault, sessions_processed, processed_sessions=None):
+def update_heartbeat(vault, sessions_processed, processed_sessions=None,
+                     scan_status='ok', errors=None):
     """Update heartbeat.md after successful scan.
     Includes processed_sessions dict for incremental scanning."""
     hb_path = os.path.join(vault, '04-Feedback', 'heartbeat.md')
+    lock_path = os.path.join(vault, '04-Feedback', '_logs', 'heartbeat.lock')
     now = datetime.now().isoformat()
 
-    if processed_sessions is None:
-        processed_sessions = {}
+    with exclusive_file_lock(lock_path):
+        _update_heartbeat_unlocked(
+            hb_path,
+            now,
+            sessions_processed,
+            processed_sessions=processed_sessions,
+            scan_status=scan_status,
+            errors=errors,
+        )
 
-    # Build processed_sessions YAML
-    ps_yaml = yaml.dump(processed_sessions, allow_unicode=True, default_flow_style=False)
-    # Indent for nested YAML
-    ps_indented = '\n'.join('  ' + line for line in ps_yaml.strip().split('\n'))
+
+def _update_heartbeat_unlocked(hb_path, now, sessions_processed,
+                               processed_sessions=None, scan_status='ok',
+                               errors=None):
+
+    existing = load_heartbeat_frontmatter(hb_path)
+    if processed_sessions is None:
+        processed_sessions = (
+            existing.get('backed_up_sessions')
+            or existing.get('processed_sessions')
+            or {}
+        )
+    errors = list(errors or [])
+    frontmatter = dict(existing)
+    frontmatter.update({
+        'last_scan': now,
+        'scan_status': scan_status,
+        'sessions_processed': sessions_processed,
+        'backed_up_sessions': processed_sessions,
+        'processed_sessions': processed_sessions,
+        'errors': errors,
+        'script_version': '1.0.0',
+    })
+    frontmatter.setdefault('harvested_sessions', {})
+    fm_yaml = yaml.dump(
+        frontmatter, allow_unicode=True, default_flow_style=False, sort_keys=False
+    )
 
     content = f"""---
-last_scan: {now}
-scan_status: ok
-sessions_processed: {sessions_processed}
-processed_sessions:
-{ps_indented}
-errors: []
-script_version: "1.0.0"
----
+{fm_yaml}---
 
 # Scanner Heartbeat
 
 Last scan: {now}
-Status: OK
+Status: {scan_status.upper()}
 Sessions processed: {sessions_processed}
 """
 
     # Atomic write
     atomic_write(hb_path, content)
 
-def rebuild_maps(vault):
+
+def load_heartbeat_frontmatter(path):
+    if not os.path.exists(path):
+        return {}
+    from session_harvester import read_heartbeat_document
+
+    frontmatter, _body = read_heartbeat_document(path)
+    return frontmatter
+
+def rebuild_maps(vault, ownership_check=None, mutation_io=None):
     """Auto-rebuild 03-Maps/: topic-index + timeline.
     Called weekly so they never go stale.
     自动重建地图：主题索引+时间线。每周调用，永不过时。"""
+    _check_ownership(ownership_check)
     import re
     from collections import defaultdict
 
@@ -443,14 +516,13 @@ def rebuild_maps(vault):
             with open(fp, 'r', encoding='utf-8') as fh:
                 content = fh.read()
             try:
-                parts = content.split('---', 2)
-                if len(parts) < 3:
+                frontmatter_text, body = split_frontmatter_text(content)
+                if frontmatter_text is None:
                     continue
-                fm = yaml.safe_load(parts[1])
+                fm = yaml.safe_load(frontmatter_text)
             except (yaml.YAMLError, IndexError):
                 continue
 
-            body = parts[2] if len(parts) > 2 else ''
             title_match = re.search(r'^#\s+(.+)', body, re.MULTILINE)
             title = title_match.group(1).strip() if title_match else fm.get('ai_title', 'Untitled')
 
@@ -514,10 +586,10 @@ def rebuild_maps(vault):
         '空间': ('空间组学 / Spatial Transcriptomics', 'Visium HD, Xenium, cross-platform'),
         'resume': ('简历与职业 / Resume & Career', 'RenderCV, YAML rendering, job requirements'),
         'CV': ('简历与职业 / Resume & Career', 'RenderCV, YAML rendering, job requirements'),
-        'Obsidian': ('Scanner 系统 / Scanner System', 'Obsidian Brain construction and maintenance'),
-        'obsidian': ('Scanner 系统 / Scanner System', 'Obsidian Brain construction and maintenance'),
-        'scanner': ('Scanner 系统 / Scanner System', 'Obsidian Brain construction and maintenance'),
-        '扫描': ('Scanner 系统 / Scanner System', 'Obsidian Brain construction and maintenance'),
+        'Obsidian': ('Scanner 系统 / Scanner System', 'Agent Memory Beacon construction and maintenance'),
+        'obsidian': ('Scanner 系统 / Scanner System', 'Agent Memory Beacon construction and maintenance'),
+        'scanner': ('Scanner 系统 / Scanner System', 'Agent Memory Beacon construction and maintenance'),
+        '扫描': ('Scanner 系统 / Scanner System', 'Agent Memory Beacon construction and maintenance'),
         'figure': ('图表渲染 / Figure Rendering', 'Nature/journal figures, color pipelines'),
         '图表': ('图表渲染 / Figure Rendering', 'Nature/journal figures, color pipelines'),
         'render': ('图表渲染 / Figure Rendering', 'Nature/journal figures, color pipelines'),
@@ -571,7 +643,8 @@ def rebuild_maps(vault):
                 extras.append(f'E: {etype[:40]}')
             extra_str = '; '.join(extras) if extras else '-'
             short = s['title'].split(' / ')[0].strip()[:60]
-            ti.append(f'| {proj} | [[sessions/{s["filename"]}\\|{short}]] | {extra_str} ({s["date"]}) |')
+            target = f'01-Projects/{s["project"]}/Memory/sessions/{s["filename"]}'
+            ti.append(f'| {proj} | [[{target}\\|{short}]] | {extra_str} ({s["date"]}) |')
         ti.append('')
 
     if untagged:
@@ -582,9 +655,16 @@ def rebuild_maps(vault):
         for s in sorted(untagged, key=lambda x: x['date']):
             proj = s['project'].replace('-pan-cancer','').replace('-toolchain','')
             short = s['title'].split(' / ')[0].strip()[:60]
-            ti.append(f'| {proj} | [[sessions/{s["filename"]}\\|{short}]] | {s["date"]} |')
+            target = f'01-Projects/{s["project"]}/Memory/sessions/{s["filename"]}'
+            ti.append(f'| {proj} | [[{target}\\|{short}]] | {s["date"]} |')
 
-    atomic_write(os.path.join(vault, '03-Maps', 'topic-index.md'), '\n'.join(ti) + '\n')
+    atomic_write(
+        os.path.join(vault, '03-Maps', 'topic-index.md'),
+        '\n'.join(ti) + '\n',
+        ownership_check=ownership_check,
+        mutation_io=mutation_io,
+    )
+    _check_ownership(ownership_check)
 
     # Write timeline.md
     tl = []
@@ -636,8 +716,14 @@ def rebuild_maps(vault):
                 ds = d[5:]
             else:
                 ds = str(d)
-            tl.append(f'| {proj} | [[sessions/{s["filename"]}\\|{short}]] |{ts} ({ds}) |')
+            target = f'01-Projects/{s["project"]}/Memory/sessions/{s["filename"]}'
+            tl.append(f'| {proj} | [[{target}\\|{short}]] |{ts} ({ds}) |')
         tl.append('')
 
-    atomic_write(os.path.join(vault, '03-Maps', 'timeline.md'), '\n'.join(tl) + '\n')
-
+    atomic_write(
+        os.path.join(vault, '03-Maps', 'timeline.md'),
+        '\n'.join(tl) + '\n',
+        ownership_check=ownership_check,
+        mutation_io=mutation_io,
+    )
+    _check_ownership(ownership_check)

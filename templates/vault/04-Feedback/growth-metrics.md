@@ -1,13 +1,13 @@
 ---
-version: "1.0.0"
+version: "0.5.0"
 baseline_start: null
 weeks: []
 ---
 
-# 成长指标 / Growth Metrics
+# Agent Memory Beacon 成长指标 / Growth Metrics
 
-> 追踪知识大脑的健康度和成长。每周日自动更新。
-> Tracks knowledge brain health and growth. Auto-updated every Sunday.
+> 追踪 Agent Memory Beacon 的健康度和成长。每周日自动更新。
+> Tracks Agent Memory Beacon health and growth. Auto-updated every Sunday.
 
 ---
 

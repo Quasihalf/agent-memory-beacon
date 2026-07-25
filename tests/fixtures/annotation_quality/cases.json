@@ -1,0 +1,301 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "id": "decision-durable-architecture",
+      "annotation_type": "decision",
+      "expected": "formal",
+      "payload": {
+        "text": "采用候选优先的标签质量门",
+        "context": "避免不确定内容直接污染正式召回"
+      }
+    },
+    {
+      "id": "decision-durable-library",
+      "annotation_type": "decision",
+      "expected": "formal",
+      "payload": {
+        "text": "使用 PyMuPDF 作为 PDF 文本提取后备方案",
+        "context": "当前环境没有 pdftotext，但仍需完成可复现校验"
+      }
+    },
+    {
+      "id": "decision-outcome-only",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "完成全部测试并更新文档",
+        "context": "任务已经结束"
+      }
+    },
+    {
+      "id": "decision-temporary",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "这次先不要上传 GitHub",
+        "context": "用户还要确认账号"
+      }
+    },
+    {
+      "id": "decision-missing-context",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "采用 Docker Compose",
+        "context": ""
+      }
+    },
+    {
+      "id": "decision-question",
+      "annotation_type": "decision",
+      "expected": "rejected",
+      "payload": {
+        "text": "是否改用 PostgreSQL？",
+        "context": "等待确认"
+      }
+    },
+    {
+      "id": "decision-review-outcome-prefix",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "answer-correctness 审查结论为 NEEDS REVISION",
+        "context": "确认三项 Q&A 路由缺陷"
+      }
+    },
+    {
+      "id": "decision-review-outcome-leading-verb",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "将审查结论定为 NEEDS REVISION",
+        "context": "回归探针未锁住发布关键不变量"
+      }
+    },
+    {
+      "id": "decision-review-severity",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "将公式完整性门的双向语义错误评为 MAJOR PROCESS",
+        "context": "合法定义域说明会被误拒"
+      }
+    },
+    {
+      "id": "decision-review-defect-list",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "将锁原子性和报告发布事务列为已复现的主要缺陷",
+        "context": "两项均由打包代码和实际命令结果证明"
+      }
+    },
+    {
+      "id": "decision-review-outcome-reverse-order",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "逻辑修复通过本地确定性验收，但公开发布验收仍待外部完成门槛",
+        "context": "当前摘要匹配，但外部发布证据仍不可用"
+      }
+    },
+    {
+      "id": "decision-review-status-release-gate",
+      "annotation_type": "decision",
+      "expected": "formal",
+      "payload": {
+        "text": "将审查 PASS 作为发布门槛",
+        "context": "只有独立审查通过后才能发布稳定版本"
+      }
+    },
+    {
+      "id": "decision-acceptance-outcome-insufficient",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "当前 Acceptance B 不足以作为原定 clean-pass 标准下的第二次通过，变更暂不应提交",
+        "context": "B 起始操作证据不完整，且关键 MOV 仍未跟踪"
+      }
+    },
+    {
+      "id": "decision-acceptance-outcome-no-promotion",
+      "annotation_type": "decision",
+      "expected": "candidate",
+      "payload": {
+        "text": "Acceptance B 暂不能作为第二次完整通过或能力晋升依据",
+        "context": "当前证据只覆盖失败后的同草稿恢复导出"
+      }
+    },
+    {
+      "id": "decision-acceptance-status-release-gate",
+      "annotation_type": "decision",
+      "expected": "formal",
+      "payload": {
+        "text": "将 Acceptance PASS 作为发布门槛",
+        "context": "只有验收通过后才能发布稳定版本"
+      }
+    },
+    {
+      "id": "decision-acceptance-capability-policy",
+      "annotation_type": "decision",
+      "expected": "formal",
+      "payload": {
+        "text": "验收 A/B 只提升逐项具有完整后置条件和独立产物证据的能力",
+        "context": "能力晋升规则需要可复算的完整验收证据，不能从单项结果跨行推断"
+      }
+    },
+    {
+      "id": "error-resolved-tool",
+      "annotation_type": "error",
+      "expected": "formal",
+      "payload": {
+        "type": "tool_binary_not_found",
+        "resolution": "系统缺少 pdftotext，改用 PyMuPDF 提取文本并完成核对"
+      }
+    },
+    {
+      "id": "error-resolved-path",
+      "annotation_type": "error",
+      "expected": "formal",
+      "payload": {
+        "type": "env_os_path_separator",
+        "resolution": "脚本引用路径不存在，重新定位到真实目录后验证命令正常运行"
+      }
+    },
+    {
+      "id": "error-unresolved-auth",
+      "annotation_type": "error",
+      "expected": "candidate",
+      "payload": {
+        "type": "api_auth_failure",
+        "resolution": "API Key 无效或无权限，尚未替换凭据"
+      }
+    },
+    {
+      "id": "error-no-verification",
+      "annotation_type": "error",
+      "expected": "candidate",
+      "payload": {
+        "type": "tool_binary_not_found",
+        "resolution": "系统缺少 rg，准备改用 grep"
+      }
+    },
+    {
+      "id": "error-expected-red",
+      "annotation_type": "error",
+      "expected": "rejected",
+      "payload": {
+        "type": "logic_assumption_violated",
+        "resolution": "TDD RED 阶段的预期失败，随后开始实现"
+      }
+    },
+    {
+      "id": "error-ui-misclick",
+      "annotation_type": "error",
+      "expected": "candidate",
+      "payload": {
+        "type": "other",
+        "resolution": "首次点击时误触历史菜单，关闭菜单后重新进入页面并成功"
+      }
+    },
+    {
+      "id": "error-success-without-failure",
+      "annotation_type": "error",
+      "expected": "candidate",
+      "payload": {
+        "type": "shell-cli",
+        "resolution": "安装 jq 并使用它完成 JSON 校验，测试通过"
+      }
+    },
+    {
+      "id": "error-triggered-not-misclick",
+      "annotation_type": "error",
+      "expected": "formal",
+      "payload": {
+        "type": "other",
+        "resolution": "Sub2API 错误触发日志重试循环，删除膨胀日志并创建守护任务后恢复正常"
+      }
+    },
+    {
+      "id": "favor-language",
+      "annotation_type": "favor",
+      "expected": "formal",
+      "payload": {
+        "content": "保留机器标签英文，说明内容使用中文",
+        "context": "用户需要直接读懂 Obsidian 记忆",
+        "type": "preference"
+      }
+    },
+    {
+      "id": "favor-project-rule",
+      "annotation_type": "favor",
+      "expected": "formal",
+      "payload": {
+        "content": "代码审查发现可修问题时默认直接修复并验证",
+        "context": "用户多次要求不要停在问题报告",
+        "type": "project_rule"
+      }
+    },
+    {
+      "id": "favor-trigger-shaped-project-rule",
+      "annotation_type": "favor",
+      "expected": "formal",
+      "payload": {
+        "content": "分析 GitHub skill、插件或仓库前先查看上游 README 和源码",
+        "context": "避免根据名称猜测项目用途",
+        "type": "project_rule"
+      }
+    },
+    {
+      "id": "favor-root-cause-routing-rule",
+      "annotation_type": "favor",
+      "expected": "formal",
+      "payload": {
+        "content": "Skill 调用场景要具体到任务根因、对象、失败模式和边界",
+        "context": "避免只靠表面关键词随意调用 Skill",
+        "type": "project_rule"
+      }
+    },
+    {
+      "id": "favor-environment",
+      "annotation_type": "favor",
+      "expected": "formal",
+      "payload": {
+        "content": "主要电脑使用 macOS，Codex 配置目录是 ~/.codex",
+        "context": "后续安装和路径选择依赖该稳定事实",
+        "type": "environment"
+      }
+    },
+    {
+      "id": "favor-temporary",
+      "annotation_type": "favor",
+      "expected": "rejected",
+      "payload": {
+        "content": "这次先不要修改文件",
+        "context": "当前只是讨论",
+        "type": "preference"
+      }
+    },
+    {
+      "id": "favor-unclear",
+      "annotation_type": "favor",
+      "expected": "candidate",
+      "payload": {
+        "content": "这个界面看起来不错",
+        "context": "单次主观反馈",
+        "type": "preference"
+      }
+    },
+    {
+      "id": "favor-question",
+      "annotation_type": "favor",
+      "expected": "rejected",
+      "payload": {
+        "content": "以后是否都用中文？",
+        "context": "用户在询问可选方案",
+        "type": "preference"
+      }
+    }
+  ]
+}

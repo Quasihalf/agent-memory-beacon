@@ -1,5 +1,6 @@
 ---
-vault_version: "1.0.0"
+vault_version: "0.5.0"
+vault_name: "Agent Memory Beacon"
 created: "{YYYY-MM-DD}"
 projects:
   - project-alpha
@@ -12,7 +13,7 @@ rules:
 last_weekly_report: null
 ---
 
-# {Vault Name} — AI 知识大脑 / AI Knowledge Brain
+# Agent Memory Beacon — AI 长期记忆 / AI Long-Term Memory
 
 > 这是你和 AI 助手共享的知识库。AI 在这里读规则、写记忆、发现模式。你在这里审批 AI 的提案、看周报、纠正错误。
 > This is the shared knowledge base between you and your AI assistants. AI reads rules, writes memories, and discovers patterns here. You approve proposals, read weekly reports, and correct mistakes here.
@@ -23,6 +24,7 @@ last_weekly_report: null
 - 关键决策（为什么这么做？）
 - 踩过的坑（怎么修的？）
 - 跨项目规则（"以后所有项目都 X"）
+- 可迁移启发（哪些新颖原理能帮助以后换思路？）
 - 每周成长指标（规则数、项目覆盖、修复率）
 
 AI 助手在会话结束时自动写摘要，每周日 Python 脚本自动扫描、聚类、生成周报。
@@ -44,6 +46,7 @@ AI assistants auto-write summaries at session end. Python scripts auto-scan, clu
 | `02-Resources/` | Web Clipper / 你 / AI | 网页保存、提示词、工具文档 / Clippings, prompts, tool docs |
 | `03-Maps/` | **脚本自动生成** / Script auto-generates | 主题索引、时间线、项目关联图 / Topic index, timeline, project graph |
 | `04-Feedback/` | **脚本自动生成** / Script auto-generates | 周报、错误分类、扫描日志 / Reports, error taxonomy, scan logs |
+| `05-Agent-Memory/` | **脚本自动生成** / Script auto-generates | 正式偏好、Skill、Workflow、Insight 与机器索引 / Formal adaptive memory and indexes |
 | `_attachments/` | 你 / AI | 图片、PDF 等附件 / Images, PDFs, etc. |
 
 ## AI 助手第一次读这里 / AI First-Read Guide
@@ -53,16 +56,17 @@ AI assistants auto-write summaries at session end. Python scripts auto-scan, clu
 1. **先读 `00-Rules/`** — 里面是用户定下的硬规则。遵守它们，不要质疑。
 2. **再看 `01-Projects/{project}/Memory/decisions.md` 和 `pitfalls.md`** — 了解这个项目做过的决策和踩过的坑。
 3. **如果有待审批的规则**（`00-Rules/_inbox/` 里有文件），在开始任务时提醒用户审批。
-4. **会话结束时**，输出 `[SESSION_SUMMARY]` 块，写入本项目的 `Memory/sessions/` 目录。
-5. **如果你犯了新错误**，在聊天里用 `[ERROR: ...]` 标注，脚本会自动捕获。
+4. **会话结束时**，只输出 `[SESSION_SUMMARY]` 块；由 harvester 写入项目 session，不要直接写文件。
+5. **如果解决了可复用错误**，用 `[ERROR: ...]` 标注根因、修复和验证；不要标注预期 RED、未解决或一次性失败。
+6. **如果用户提出了可迁移的新颖原理**，用 `[LEARN: ...]` 记录 novelty、transfer、boundary 和逐字 user evidence；assistant 自己的推测不能作为用户 Insight。
 
 > **If you are an AI assistant, this is your first-read file.**
 
 1. **Read `00-Rules/` first** — these are the user's hard rules. Follow them, don't question them.
 2. **Then read `01-Projects/{project}/Memory/decisions.md` and `pitfalls.md`** — understand past decisions and pitfalls for this project.
 3. **If there are pending approval cards** (files in `00-Rules/_inbox/`), remind the user at session start.
-4. **At session end**, output a `[SESSION_SUMMARY]` block and write to this project's `Memory/sessions/` directory.
-5. **If you encounter a new error**, annotate with `[ERROR: ...]` in chat — the scanner will auto-capture it.
+4. **At session end**, only output a `[SESSION_SUMMARY]` block; the harvester owns the session file.
+5. **After resolving a reusable error**, annotate its cause, fix, and verification with `[ERROR: ...]`; do not tag expected RED, unresolved, or one-off failures.
 
 ## 当前状态 / Current State
 

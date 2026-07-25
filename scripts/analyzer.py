@@ -11,6 +11,7 @@ import yaml
 import time
 from datetime import datetime
 from config import get_api_config
+from safety import split_frontmatter_text
 
 
 def run(cfg, dry_run=False, full=False):
@@ -97,11 +98,11 @@ def load_taxonomy(vault):
             content = f.read()
     except Exception:
         return {"categories": []}
-    parts = content.split('---')
-    if len(parts) < 3:
+    frontmatter_text, _body = split_frontmatter_text(content)
+    if frontmatter_text is None:
         return {"categories": []}
     try:
-        taxonomy = yaml.safe_load(parts[1])
+        taxonomy = yaml.safe_load(frontmatter_text)
     except yaml.YAMLError:
         return {"categories": []}
     if not isinstance(taxonomy, dict) or 'categories' not in taxonomy:
@@ -129,11 +130,11 @@ def keyword_screen(vault, error_types, taxonomy):
                     content = fh.read()
             except Exception:
                 continue
-            fm_parts = content.split('---', 2)
-            if len(fm_parts) < 3:
+            frontmatter_text, _body = split_frontmatter_text(content)
+            if frontmatter_text is None:
                 continue
             try:
-                fm = yaml.safe_load(fm_parts[1])
+                fm = yaml.safe_load(frontmatter_text)
             except yaml.YAMLError:
                 continue
             if not isinstance(fm, dict):
@@ -144,23 +145,18 @@ def keyword_screen(vault, error_types, taxonomy):
                 etype = err.get('type', '')
                 if not etype:
                     continue
-                normalized = etype
-                if '_' in etype:
-                    type_parts = etype.split('_', 1)
-                    if len(type_parts) == 2:
-                        cat_names = [c.get('name', '') for c in taxonomy.get('categories', [])
-                                    if isinstance(c, dict)]
-                        if type_parts[0] in cat_names:
-                            normalized = type_parts[1]
-                if etype in error_types or normalized in error_types:
-                    error_counts[etype] += 1
-                    if etype not in error_contexts:
-                        error_contexts[etype] = []
-                    error_contexts[etype].append({
-                        'project': proj,
-                        'session': filename.replace('.md', ''),
-                        'resolution': err.get('resolution', '')
-                    })
+                # Category-level annotations such as ``path-filesystem`` are
+                # valid even when a vault taxonomy lists only leaf values.
+                # Unknown but sanitized types remain reviewable instead of
+                # silently disappearing from the learning pipeline.
+                error_counts[etype] += 1
+                if etype not in error_contexts:
+                    error_contexts[etype] = []
+                error_contexts[etype].append({
+                    'project': proj,
+                    'session': filename.replace('.md', ''),
+                    'resolution': err.get('resolution', '')
+                })
 
     return [
         {
@@ -292,7 +288,10 @@ def load_existing_rules(vault):
         try:
             with open(fp, 'r', encoding='utf-8') as fh:
                 content = fh.read()
-            fm = yaml.safe_load(content.split('---')[1])
+            frontmatter_text, _body = split_frontmatter_text(content)
+            if frontmatter_text is None:
+                continue
+            fm = yaml.safe_load(frontmatter_text)
             rules.append({
                 "rule_id": fm.get("rule_id", f.replace(".md", "")),
                 "title": fm.get("title", ""),

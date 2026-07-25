@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: scripts/requirements.lock
+      - name: Install runtime dependencies
+        run: python -m pip install -r scripts/requirements.lock
+      - name: Check installed dependencies
+        run: python -m pip check
+      - name: Compile Python sources
+        run: python -m compileall -q scripts tests
+      - name: Run unit tests
+        run: python -B -m unittest discover -s tests
+      - name: Run memory runtime evaluation
+        run: >-
+          python -B scripts/evaluate_memory_runtime.py
+          --fixtures tests/fixtures/memory_runtime
+
+  security:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scripts/requirements.lock
+      - name: Install audit tools
+        run: python -m pip install pip-audit==2.10.1 bandit==1.9.4
+      - name: Audit locked dependencies
+        run: python -m pip_audit -r scripts/requirements.lock
+      - name: Scan for high-severity Python issues
+        run: bandit -q -lll -r scripts -x scripts/.venv

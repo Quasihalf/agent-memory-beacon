@@ -1,50 +1,67 @@
 #!/usr/bin/env python3
-"""Weekly upstream watcher for the personalized Obsidian Knowledge Brain fork."""
+"""Weekly upstream watcher for Agent Memory Beacon's upstream fork."""
 import argparse
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+from branding import default_vault_path
+from config import CONFIG_PATH, load_config
+
 
 CST = timezone(timedelta(hours=8))
 REPO = Path(__file__).resolve().parents[1]
-VAULT = Path("/Users/a0000/ObsidianBrain")
-OUT_DIR = VAULT / "04-Feedback" / "upstream-watch"
-STATE_PATH = OUT_DIR / "state.json"
 UPSTREAM_REF = "upstream/master"
 LOCAL_REF = "HEAD"
+GIT = shutil.which("git") or "/usr/bin/git"
 
 
 def run_git(args, check=True):
     result = subprocess.run(
-        ["git", *args],
+        [GIT, *args],
         cwd=REPO,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        timeout=120,
     )
     if check and result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout.strip()
 
 
-def load_state():
-    if not STATE_PATH.exists():
+def configured_vault():
+    try:
+        Path(CONFIG_PATH).lstat()
+    except FileNotFoundError:
+        return default_vault_path()
+    return Path(load_config()["vault_path"]).expanduser()
+
+
+def watch_paths(vault=None):
+    root = Path(vault).expanduser() if vault is not None else configured_vault()
+    out_dir = root / "04-Feedback" / "upstream-watch"
+    return out_dir, out_dir / "state.json"
+
+
+def load_state(state_path):
+    if not state_path.exists():
         return {}
     try:
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 
 
-def save_state(state):
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_PATH.with_suffix(".json.tmp")
+def save_state(state, out_dir, state_path):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp = state_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, STATE_PATH)
+    os.replace(tmp, state_path)
 
 
 def fetch_upstream():
@@ -116,7 +133,7 @@ def compare_notes(features, files):
     if any(line.startswith("D\t") and ("install_codex.py" in line or "install_claude.py" in line) for line in files):
         risks.append("上游删除平台安装脚本，可能和当前分别适配 Codex/Claude 的策略冲突。")
     if any(".claude" in item.lower() for item in features) or any("project-local" in item.lower() for item in features):
-        risks.append("上游更偏 project-local 存储，和当前以 ObsidianBrain vault 为中心的设计不同。")
+        risks.append("上游更偏 project-local 存储，和当前以配置的 Obsidian Vault 为中心的设计不同。")
     if not advantages:
         advantages.append("可作为上游变化参考，暂不一定需要融合。")
     if not risks:
@@ -167,15 +184,16 @@ def escape_cell(value):
     return str(value).replace("|", "\\|")
 
 
-def write_report(content):
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def write_report(content, out_dir):
+    out_dir.mkdir(parents=True, exist_ok=True)
     date = datetime.now(CST).strftime("%Y-%m-%d")
-    path = OUT_DIR / f"{date}-upstream-update.md"
+    path = out_dir / f"{date}-upstream-update.md"
     path.write_text(content, encoding="utf-8")
     return path
 
 
 def main():
+    out_dir, state_path = watch_paths()
     parser = argparse.ArgumentParser()
     parser.add_argument("--init", action="store_true", help="Record current upstream as baseline.")
     parser.add_argument("--force-report", action="store_true", help="Write a report even if no new upstream rev.")
@@ -183,7 +201,7 @@ def main():
 
     fetch_upstream()
     current = rev(UPSTREAM_REF)
-    state = load_state()
+    state = load_state(state_path)
     previous = state.get("last_seen_upstream")
 
     if args.init:
@@ -191,13 +209,13 @@ def main():
             **state,
             "last_seen_upstream": current,
             "last_checked": datetime.now(CST).isoformat(),
-        })
+        }, out_dir, state_path)
         print(f"[upstream-watch] baseline set to {current}")
         return 0
 
     if previous == current and not args.force_report:
         state["last_checked"] = datetime.now(CST).isoformat()
-        save_state(state)
+        save_state(state, out_dir, state_path)
         print(f"[upstream-watch] no update: {current}")
         return 0
 
@@ -205,13 +223,13 @@ def main():
     files = changed_files(previous, current)
     stat = diff_stat(previous, current)
     report = render_report(previous, current, rows, files, stat)
-    path = write_report(report)
+    path = write_report(report, out_dir)
     save_state({
         **state,
         "last_seen_upstream": current,
         "last_report": str(path),
         "last_checked": datetime.now(CST).isoformat(),
-    })
+    }, out_dir, state_path)
     print(f"[upstream-watch] wrote report: {path}")
     return 0
 

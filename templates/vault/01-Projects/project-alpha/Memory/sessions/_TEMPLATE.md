@@ -6,10 +6,10 @@ parent_session: null
 duration_min: 0
 ai_title: "{Brief descriptive title}"
 summary_status: "draft"
-summary_type: "auto"
+summary_type: "session"
 tags: []
-decisions_made: 0
-errors_encountered: 0
+decisions_made: []
+errors_encountered: []
 rules_triggered: []
 new_patterns_flagged: []
 ---

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Obsidian Brain Weekly Scanner — Pipeline Orchestrator."""
+"""Agent Memory Beacon weekly scanner pipeline orchestrator."""
 import sys
 import os
 import json
 import yaml
 import argparse
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from config import load_config
+from safety import split_frontmatter_text
 
 # Force UTF-8 on Windows — otherwise emoji and Chinese crash GBK stdout
 if sys.platform == 'win32':
@@ -17,7 +18,7 @@ STEPS = ["backup", "analyze", "maintain", "report", "compile"]
 LOCK_FILE = "scanner.lock"
 
 def main():
-    parser = argparse.ArgumentParser(description="Obsidian Brain Weekly Scanner")
+    parser = argparse.ArgumentParser(description="Agent Memory Beacon weekly scanner")
     parser.add_argument("--dry-run", action="store_true", help="Analyze without modifying files")
     parser.add_argument("--full", action="store_true", help="Full rescan of all sessions")
     parser.add_argument("--rollback", metavar="DATE", help="Rollback to pre-scan state (format: YYYY-MM-DD)")
@@ -34,10 +35,10 @@ def main():
     if os.path.exists(vault_readme):
         with open(vault_readme, 'r', encoding='utf-8') as f:
             content = f.read()
-        parts = content.split('---', 2)
-        if len(parts) >= 3:
+        frontmatter_text, _body = split_frontmatter_text(content)
+        if frontmatter_text is not None:
             try:
-                fm = yaml.safe_load(parts[1])
+                fm = yaml.safe_load(frontmatter_text)
                 vault_ver = fm.get('vault_version', '0.0')
                 script_ver = "2.0"
                 if int(str(vault_ver).split('.')[0]) > int(script_ver.split('.')[0]):
@@ -50,28 +51,13 @@ def main():
     # Missed-scan catch-up: if last scan was > 7 days ago, auto-enable full mode
     # 漏扫描补跑：如果上次扫描超过7天，自动开启全量模式
     heartbeat_path = os.path.join(cfg['vault_path'], '04-Feedback', 'heartbeat.md')
-    missed_weeks = 0
-    if not args.full and os.path.exists(heartbeat_path):
-        try:
-            with open(heartbeat_path, 'r', encoding='utf-8') as f:
-                hb_content = f.read()
-            hb_parts = hb_content.split('---', 2)
-            if len(hb_parts) >= 3:
-                hb_fm = yaml.safe_load(hb_parts[1])
-                last_scan_str = hb_fm.get('last_scan')
-                if last_scan_str and last_scan_str != 'null':
-                    last_scan = datetime.fromisoformat(last_scan_str)
-                    days_since = (datetime.now() - last_scan).days
-                    if days_since > 7:
-                        missed_weeks = days_since // 7
-                        args.full = True
-                        print(f"⚠ 上次扫描距今 {days_since} 天，约 {missed_weeks} 周未扫描 / Last scan was {days_since} days ago, ~{missed_weeks} week(s) missed")
-                        print(f"  自动启用全量模式，补跑积压 session / Auto-enabling full mode to catch up")
-                else:
-                    # Never scanned before — first run
-                    pass
-        except Exception:
-            pass
+    args.full, missed_weeks = resolve_scan_mode(
+        heartbeat_path,
+        requested_full=args.full,
+    )
+    if missed_weeks:
+        print(f"⚠ 约 {missed_weeks} 周未扫描 / Approximately {missed_weeks} week(s) missed")
+        print("  自动启用全量模式，补跑积压 session / Auto-enabling full mode to catch up")
 
     # Scan overlap prevention
     lock_path = os.path.join(cfg['vault_path'], '04-Feedback', LOCK_FILE)
@@ -117,8 +103,15 @@ def main():
                 elif step == "compile":
                     from compiler import run as compile_run
                     results[step] = compile_run(cfg, dry_run=args.dry_run, step_results=results)
-                print(f"    OK: {results[step]}")
-                logger.log("step_complete", {"step": step, "result_summary": str(results[step])[:200]})
+                if result_has_errors(results[step]):
+                    print(f"    WARN: {results[step]}")
+                    logger.log(
+                        "step_error",
+                        {"step": step, "error": str(results[step])[:500]},
+                    )
+                else:
+                    print(f"    OK: {results[step]}")
+                    logger.log("step_complete", {"step": step, "result_summary": str(results[step])[:200]})
             except Exception as e:
                 print(f"    FAIL: {e}")
                 results[step] = {"error": str(e)}
@@ -132,21 +125,74 @@ def main():
     finally:
         release_lock(lock_path)
 
+
+def resolve_scan_mode(heartbeat_path, requested_full=False, now=None):
+    """Return whether this run is full and how many whole weeks were missed."""
+    if requested_full:
+        return True, 0
+    if not os.path.exists(heartbeat_path):
+        return False, 0
+
+    try:
+        with open(heartbeat_path, 'r', encoding='utf-8') as handle:
+            heartbeat = handle.read()
+        frontmatter_text, _body = split_frontmatter_text(heartbeat)
+        if frontmatter_text is None:
+            return False, 0
+        frontmatter = yaml.safe_load(frontmatter_text)
+        if not isinstance(frontmatter, dict):
+            return False, 0
+        last_scan_value = frontmatter.get('last_scan')
+        if not last_scan_value or str(last_scan_value) == 'null':
+            return False, 0
+        if isinstance(last_scan_value, datetime):
+            last_scan = last_scan_value
+        else:
+            last_scan = datetime.fromisoformat(str(last_scan_value))
+        current = now or datetime.now()
+        days_since = (
+            _as_utc(current) - _as_utc(last_scan)
+        ).days
+    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        return False, 0
+
+    if days_since <= 7:
+        return False, 0
+    return True, days_since // 7
+
+
+def _as_utc(value):
+    """Normalize aware or local-naive datetimes before elapsed-time checks."""
+    if not isinstance(value, datetime):
+        raise TypeError("scan timestamp must be a datetime")
+    return value.astimezone(timezone.utc)
+
 def acquire_lock(lock_path, force=False):
     """Prevent concurrent scans. Returns True if lock acquired."""
-    if os.path.exists(lock_path):
-        if force:
-            os.remove(lock_path)
-        else:
-            # Check if lock is stale (> 2 hours)
-            mtime = datetime.fromtimestamp(os.path.getmtime(lock_path))
-            if (datetime.now() - mtime).total_seconds() > 7200:
-                os.remove(lock_path)
-            else:
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    for _attempt in range(2):
+        try:
+            fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                age = datetime.now().timestamp() - os.path.getmtime(lock_path)
+            except OSError:
+                continue
+            if not force and age <= 7200:
                 return False
-    with open(lock_path, 'w') as f:
-        f.write(datetime.now().isoformat())
-    return True
+            try:
+                os.unlink(lock_path)
+            except FileNotFoundError:
+                continue
+            continue
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps({
+                'pid': os.getpid(),
+                'created_at': datetime.now().isoformat(),
+            }))
+            handle.write('\n')
+        return True
+    return False
 
 def release_lock(lock_path):
     """Release the scan lock."""
@@ -155,6 +201,19 @@ def release_lock(lock_path):
             os.remove(lock_path)
     except OSError:
         pass
+
+
+def result_has_errors(result):
+    if not isinstance(result, dict):
+        return False
+    return any(
+        value and (key == 'error' or key.endswith('_error'))
+        for key, value in result.items()
+    )
+
+
+def results_have_errors(results):
+    return any(result_has_errors(result) for result in (results or {}).values())
 
 def rollback(cfg, date_str):
     """Restore files from _rollback/{date}/ to vault."""
@@ -219,4 +278,6 @@ def cleanup_old_logs(log_dir, retention_days=30):
 
 
 if __name__ == '__main__':
-    main()
+    pipeline_results = main()
+    if isinstance(pipeline_results, dict) and results_have_errors(pipeline_results):
+        sys.exit(1)

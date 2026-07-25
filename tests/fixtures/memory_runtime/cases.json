@@ -1,0 +1,208 @@
+{
+  "schema_version": "1.2",
+  "runtime_schema_version": "2.0",
+  "assertion_contract": {
+    "version": 2,
+    "sha256": "75c7608a2f0a16e84de12c92e0518f7962b3529fe41ed63bed0837145777f4ca"
+  },
+  "projects": ["agent-memory-beacon", "tcad", "notes-counter"],
+  "project_keywords": {
+    "agent-memory-beacon": ["agent-memory-beacon", "github-obsidian-knowledge-brain", "obsidian-knowledge-brain"],
+    "tcad": ["tcad", "sentaurus"],
+    "notes-counter": ["notes-counter"]
+  },
+  "retrieval_cases": [
+    {
+      "id": "pensive-workflow",
+      "prompt": "pensive 检查发现问题后应该怎么办",
+      "cwd": "/tmp/github-obsidian-knowledge-brain/repo",
+      "trigger": "first_prompt",
+      "required_ids": ["workflow:pensive"],
+      "allowed_ids": ["workflow:pensive"],
+      "forbidden_ids": []
+    },
+    {
+      "id": "github-source-first",
+      "prompt": "分析 GitHub 仓库 README manifest 源码",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": ["workflow:github"],
+      "allowed_ids": ["workflow:github"],
+      "forbidden_ids": []
+    },
+    {
+      "id": "global-chinese-preference",
+      "prompt": "复杂审查使用中文和机器标签",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": ["preference:chinese"],
+      "allowed_ids": ["preference:chinese"],
+      "forbidden_ids": []
+    },
+    {
+      "id": "global-humanizer-skill",
+      "prompt": "humanizer 去除模板感让文字自然",
+      "cwd": "/tmp/unrelated",
+      "trigger": "first_prompt",
+      "required_ids": ["skill:humanizer"],
+      "allowed_ids": ["skill:humanizer"],
+      "forbidden_ids": []
+    },
+    {
+      "id": "formal-index-decision",
+      "prompt": "formalprobe schema active 正式索引",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": ["decision:formal-index"],
+      "allowed_ids": ["decision:formal-index"],
+      "forbidden_ids": []
+    },
+    {
+      "id": "path-error",
+      "prompt": "pathprobe 路径文件失败怎么修复",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "risk_or_error",
+      "risk": true,
+      "required_ids": ["error:path"],
+      "critical_error_ids": ["error:path"],
+      "allowed_ids": ["error:path"],
+      "forbidden_ids": []
+    },
+    {
+      "id": "reconnect-error",
+      "prompt": "reconnectprobe Hook JSON 重连报错",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "risk_or_error",
+      "risk": true,
+      "required_ids": ["error:reconnect"],
+      "critical_error_ids": ["error:reconnect"],
+      "allowed_ids": ["error:reconnect"],
+      "forbidden_ids": []
+    },
+    {
+      "id": "tcad-decision",
+      "prompt": "tcadprobe Sentaurus Linux 远程运行",
+      "cwd": "/tmp/tcad",
+      "trigger": "first_prompt",
+      "required_ids": ["decision:tcad"],
+      "allowed_ids": ["decision:tcad"],
+      "forbidden_ids": ["decision:formal-index"]
+    },
+    {
+      "id": "tcad-license-error",
+      "prompt": "licenseprobe Sentaurus 许可证失败",
+      "cwd": "/tmp/tcad",
+      "trigger": "risk_or_error",
+      "risk": true,
+      "required_ids": ["error:tcad-license"],
+      "critical_error_ids": ["error:tcad-license"],
+      "allowed_ids": ["error:tcad-license"],
+      "forbidden_ids": ["error:path"]
+    },
+    {
+      "id": "tcad-remote-workflow",
+      "prompt": "remoteprobe Tailscale Linux 虚拟机",
+      "cwd": "/tmp/tcad",
+      "trigger": "first_prompt",
+      "required_ids": ["workflow:tcad-remote"],
+      "allowed_ids": ["workflow:tcad-remote"],
+      "forbidden_ids": []
+    },
+    {
+      "id": "cross-project-common-term",
+      "prompt": "sharedprobe 统计笔记",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": [],
+      "allowed_ids": [],
+      "forbidden_ids": ["decision:notes"]
+    },
+    {
+      "id": "unknown-project-is-global-only",
+      "prompt": "Linux 远程运行",
+      "cwd": "/tmp/unrelated",
+      "trigger": "first_prompt",
+      "required_ids": [],
+      "allowed_ids": [],
+      "forbidden_ids": ["decision:tcad", "workflow:tcad-remote"]
+    },
+    {
+      "id": "candidate-lure",
+      "prompt": "candidateprobe 候选",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": [],
+      "allowed_ids": [],
+      "forbidden_ids": ["decision:candidate-lure"],
+      "candidate_lure_ids": ["decision:candidate-lure"]
+    },
+    {
+      "id": "session-lure",
+      "prompt": "sessionprobe session 证据",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": [],
+      "allowed_ids": [],
+      "forbidden_ids": ["decision:session-lure"],
+      "candidate_lure_ids": ["decision:session-lure"]
+    },
+    {
+      "id": "insight-one-shot-seed",
+      "prompt": "请设计 fusioninsightprobe 多个不可靠审查器组合独立证据的新方案",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": ["insight:fusion-seed"],
+      "allowed_ids": ["insight:fusion-seed"],
+      "forbidden_ids": ["insight:animation-reinforced", "insight:candidate-lure", "insight:assistant-lure"],
+      "candidate_lure_ids": ["insight:candidate-lure"],
+      "assistant_lure_ids": ["insight:assistant-lure"]
+    },
+    {
+      "id": "insight-ordinary-suppressed",
+      "prompt": "fusioninsightprobe 按既定步骤执行审查器证据融合",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": [],
+      "allowed_ids": [],
+      "forbidden_ids": ["insight:fusion-seed"]
+    },
+    {
+      "id": "insight-ambiguous-suppressed",
+      "prompt": "给我一个思路",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": [],
+      "allowed_ids": [],
+      "forbidden_ids": ["insight:fusion-seed", "insight:animation-reinforced"]
+    },
+    {
+      "id": "insight-inventory-safe",
+      "prompt": "列出所有启发",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": ["insight:fusion-seed", "insight:animation-reinforced"],
+      "allowed_ids": ["insight:fusion-seed", "insight:animation-reinforced"],
+      "forbidden_ids": ["insight:candidate-lure", "insight:assistant-lure"],
+      "candidate_lure_ids": ["insight:candidate-lure"],
+      "assistant_lure_ids": ["insight:assistant-lure"]
+    }
+  ],
+  "trigger_cases": [
+    {"id": "first", "state": "first", "prompt": "检查动态召回正式索引", "expected_trigger": "first_prompt"},
+    {"id": "first-short", "state": "first", "prompt": "好的", "expected_trigger": "", "irrelevant": true},
+    {"id": "same-topic", "state": "current", "baseline_prompt": "Obsidian Codex 动态召回索引", "prompt": "Obsidian Codex 动态召回索引", "expected_trigger": "", "irrelevant": true},
+    {"id": "topic-changed", "state": "current", "baseline_prompt": "Obsidian Codex 动态召回索引", "prompt": "Sentaurus TCAD Linux 许可证配置", "expected_trigger": "topic_changed"},
+    {"id": "stale", "state": "stale", "baseline_prompt": "Obsidian Codex 动态召回索引", "prompt": "Obsidian Codex 动态召回索引", "expected_trigger": "stale_30m"},
+    {"id": "index-changed", "state": "index_changed", "baseline_prompt": "Obsidian Codex 动态召回索引", "prompt": "Obsidian Codex 动态召回索引", "expected_trigger": "index_changed"},
+    {"id": "risk-error", "state": "current", "baseline_prompt": "Obsidian Codex 动态召回索引", "prompt": "连接失败并出现报错", "expected_trigger": "risk_or_error"},
+    {"id": "short-index-change", "state": "index_changed", "baseline_prompt": "Obsidian Codex 动态召回索引", "prompt": "可以", "expected_trigger": "", "expected_pending": true, "irrelevant": true},
+    {"id": "weak-topic", "state": "current", "baseline_prompt": "Obsidian Codex 动态召回索引", "prompt": "检查程序", "expected_trigger": "", "irrelevant": true}
+  ],
+  "long_task": {
+    "message_count": 100,
+    "base_ids": ["decision:formal-index", "decision:editable", "decision:deletable"],
+    "fresh_id": "decision:fresh",
+    "editable_id": "decision:editable",
+    "deletable_id": "decision:deletable"
+  }
+}

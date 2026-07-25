@@ -1,1 +1,1 @@
-# Agent Memory Vault — Scanner Scripts
+# Agent Memory Beacon — Scanner Scripts

@@ -331,6 +331,7 @@ categories:
 
 > **注意 / Note**: 以上分类和关键词是通用模板。请根据你的实际项目替换为真实错误类型。keywords 字段是脚本做关键词预筛选的关键依据。
 > The categories and keywords above are generic templates. Replace them with real error types from your projects. The `keywords` field is critical for the scanner's keyword pre-screening.
+> 默认模板包含 11 个 category、32 个 subcategory；修改后的当前 Vault 文件始终是机器标签的权威来源。
 
 ---
 

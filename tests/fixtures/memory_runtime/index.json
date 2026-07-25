@@ -1,0 +1,477 @@
+{
+  "schema_version": "2.0",
+  "generated_by": "memory-runtime-fixture",
+  "generated_at": "2026-07-13T00:00:00+08:00",
+  "unit_count": 20,
+  "units": [
+    {
+      "id": "workflow:pensive",
+      "revision": "a8f144a87d9e38a3ffc50dda03df24a1746eead7b5b918f311a026d1137dc8eb",
+      "type": "workflow",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "pensive_review_then_fix",
+      "summary": "pensive 检查发现可验证问题后直接修复并运行测试",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:05-Agent-Memory/workflow-rules"
+      ],
+      "aliases": [],
+      "path": "05-Agent-Memory/workflow-rules",
+      "source_note": "note:05-Agent-Memory/workflow-rules",
+      "recall_summary": "pensive 检查发现可验证问题后直接修复并运行测试",
+      "terms": [
+        "pensive",
+        "检查",
+        "修复",
+        "测试"
+      ]
+    },
+    {
+      "id": "workflow:github",
+      "revision": "5ff662ada62f91f782e132317a8d9a98ae7372fa50d960b0a37896009c60e5dd",
+      "type": "workflow",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "github_source_first",
+      "summary": "分析 GitHub 仓库前先阅读 README manifest 和关键源码",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:05-Agent-Memory/workflow-rules"
+      ],
+      "aliases": [],
+      "path": "05-Agent-Memory/workflow-rules",
+      "source_note": "note:05-Agent-Memory/workflow-rules",
+      "recall_summary": "分析 GitHub 仓库前先阅读 README manifest 和关键源码",
+      "terms": [
+        "github",
+        "readme",
+        "manifest",
+        "源码"
+      ]
+    },
+    {
+      "id": "preference:chinese",
+      "revision": "7c23da7a5a464bbe7efaaab74ee89bf6b3030364304d3beb1513b496e96a7435",
+      "type": "preference",
+      "status": "active",
+      "project": "",
+      "scope": "global",
+      "title": "复杂审查默认使用中文",
+      "summary": "机器标签保留英文，复杂审查内容使用中文",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:05-Agent-Memory/personal-memory"
+      ],
+      "aliases": [],
+      "path": "05-Agent-Memory/personal-memory",
+      "source_note": "note:05-Agent-Memory/personal-memory",
+      "recall_summary": "机器标签保留英文，复杂审查内容使用中文",
+      "terms": [
+        "中文",
+        "审查",
+        "机器",
+        "标签"
+      ]
+    },
+    {
+      "id": "skill:humanizer",
+      "revision": "f3ee65c32a6b7aa51c97bb7cd21b06d5b5fee81d5dba5259ccf9860676f64ff3",
+      "type": "skill",
+      "status": "active",
+      "project": "",
+      "scope": "global",
+      "title": "humanizer",
+      "summary": "需要去除模板感和 AI 味时调用 humanizer",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:05-Agent-Memory/skill-routing-rules"
+      ],
+      "aliases": [],
+      "path": "05-Agent-Memory/skill-routing-rules",
+      "source_note": "note:05-Agent-Memory/skill-routing-rules",
+      "recall_summary": "需要去除模板感和 AI 味时调用 humanizer",
+      "terms": [
+        "humanizer",
+        "模板",
+        "自然"
+      ]
+    },
+    {
+      "id": "decision:formal-index",
+      "revision": "059800f1f25f69737eef2fa854f433eaaa968d5be72934b16060edb3de524fd5",
+      "type": "decision",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "动态召回只读取正式索引",
+      "summary": "formalprobe 使用 schema 2.0 active 正式记忆",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/decisions"
+      ],
+      "aliases": [],
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "source_note": "note:01-Projects/agent-memory-beacon/Memory/decisions",
+      "recall_summary": "formalprobe 使用 schema 2.0 active 正式记忆",
+      "terms": [
+        "formalprobe",
+        "schema",
+        "active",
+        "正式",
+        "索引"
+      ]
+    },
+    {
+      "id": "error:path",
+      "revision": "80491e2fb76f199839a3c2e2c739aa9626d208cab40f759581f453da8e51cf70",
+      "type": "error",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "path-filesystem",
+      "summary": "pathprobe 旧路径不存在时重新定位真实文件并验证",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/pitfalls"
+      ],
+      "aliases": [],
+      "path": "01-Projects/agent-memory-beacon/Memory/pitfalls",
+      "source_note": "note:01-Projects/agent-memory-beacon/Memory/pitfalls",
+      "recall_summary": "pathprobe 旧路径不存在时重新定位真实文件并验证",
+      "terms": [
+        "pathprobe",
+        "路径",
+        "文件",
+        "验证"
+      ]
+    },
+    {
+      "id": "error:reconnect",
+      "revision": "2d9970b6869e87a49f448283dff4aabf60b722fbebebfeacee4efd6a22f8a789",
+      "type": "error",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "api-network",
+      "summary": "reconnectprobe Hook stdout 混入非 JSON 会导致重连，修复为 JSON-only",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/pitfalls"
+      ],
+      "aliases": [],
+      "path": "01-Projects/agent-memory-beacon/Memory/pitfalls",
+      "source_note": "note:01-Projects/agent-memory-beacon/Memory/pitfalls",
+      "recall_summary": "reconnectprobe Hook stdout 混入非 JSON 会导致重连，修复为 JSON-only",
+      "terms": [
+        "reconnectprobe",
+        "hook",
+        "json",
+        "重连"
+      ]
+    },
+    {
+      "id": "decision:tcad",
+      "revision": "5464388c8dc171b34679783cdab5dd53d9b3799c26831f5aa45f5e5aad2c975c",
+      "type": "decision",
+      "status": "active",
+      "project": "tcad",
+      "scope": "project",
+      "title": "Sentaurus 使用远程 Linux 服务器",
+      "summary": "tcadprobe macOS 不原生支持 Sentaurus",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/tcad/Memory/decisions"
+      ],
+      "aliases": [],
+      "path": "01-Projects/tcad/Memory/decisions",
+      "source_note": "note:01-Projects/tcad/Memory/decisions",
+      "recall_summary": "tcadprobe macOS 不原生支持 Sentaurus",
+      "terms": [
+        "tcadprobe",
+        "sentaurus",
+        "linux",
+        "远程"
+      ]
+    },
+    {
+      "id": "error:tcad-license",
+      "revision": "9840f0c6fea90346ae52620a8e6e75b676968c935d93b9ab95146e696c4a3313",
+      "type": "error",
+      "status": "active",
+      "project": "tcad",
+      "scope": "project",
+      "title": "other",
+      "summary": "licenseprobe Sentaurus 许可证失败时检查服务器版本和许可配置",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/tcad/Memory/pitfalls"
+      ],
+      "aliases": [],
+      "path": "01-Projects/tcad/Memory/pitfalls",
+      "source_note": "note:01-Projects/tcad/Memory/pitfalls",
+      "recall_summary": "licenseprobe Sentaurus 许可证失败时检查服务器版本和许可配置",
+      "terms": [
+        "licenseprobe",
+        "sentaurus",
+        "许可证",
+        "失败"
+      ]
+    },
+    {
+      "id": "workflow:tcad-remote",
+      "revision": "709f375d1e1ce72589641852c6605999987d581363b320441aa891e53f3ce649",
+      "type": "workflow",
+      "status": "active",
+      "project": "tcad",
+      "scope": "project",
+      "title": "tcad_remote_linux",
+      "summary": "remoteprobe 使用 Tailscale 直连 Linux 虚拟机",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:05-Agent-Memory/workflow-rules"
+      ],
+      "aliases": [],
+      "path": "05-Agent-Memory/workflow-rules",
+      "source_note": "note:05-Agent-Memory/workflow-rules",
+      "recall_summary": "remoteprobe 使用 Tailscale 直连 Linux 虚拟机",
+      "terms": [
+        "remoteprobe",
+        "tailscale",
+        "linux",
+        "虚拟机"
+      ]
+    },
+    {
+      "id": "decision:notes",
+      "revision": "8754fdf53bd03456793a43d3fd43851106ca89a84dd5f58d759811c7eeca5d61",
+      "type": "decision",
+      "status": "active",
+      "project": "notes-counter",
+      "scope": "project",
+      "title": "统计笔记数量",
+      "summary": "sharedprobe 只属于 notes-counter 项目",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/notes-counter/Memory/decisions"
+      ],
+      "aliases": [],
+      "path": "01-Projects/notes-counter/Memory/decisions",
+      "source_note": "note:01-Projects/notes-counter/Memory/decisions",
+      "recall_summary": "sharedprobe 只属于 notes-counter 项目",
+      "terms": [
+        "sharedprobe",
+        "统计",
+        "笔记"
+      ]
+    },
+    {
+      "id": "decision:candidate-lure",
+      "revision": "17a478762fc5f0c32b05d70337ac2bf6eacd5bcf958bebce005109b65336b82e",
+      "type": "decision",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "候选诱饵",
+      "summary": "candidateprobe 绝不能进入运行时",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:04-Feedback/_memory-candidates/lure"
+      ],
+      "aliases": [],
+      "path": "04-Feedback/_memory-candidates/lure",
+      "source_note": "note:04-Feedback/_memory-candidates/lure",
+      "recall_summary": "candidateprobe 绝不能进入运行时",
+      "terms": [
+        "candidateprobe",
+        "候选"
+      ]
+    },
+    {
+      "id": "decision:session-lure",
+      "revision": "6ff68180bbc269fb42718f19b10b24c8af514c1766035d176243490d62788011",
+      "type": "decision",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "Session 诱饵",
+      "summary": "sessionprobe 证据不能直接进入运行时",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/sessions/lure"
+      ],
+      "aliases": [],
+      "path": "01-Projects/agent-memory-beacon/Memory/sessions/lure",
+      "source_note": "note:01-Projects/agent-memory-beacon/Memory/sessions/lure",
+      "recall_summary": "sessionprobe 证据不能直接进入运行时",
+      "terms": [
+        "sessionprobe",
+        "session",
+        "证据"
+      ]
+    },
+    {
+      "id": "decision:fresh",
+      "revision": "c25ae138daaeb168b1f04817ffe742aa166e7d15757724c3552237f3a36ef9c9",
+      "type": "decision",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "长任务中新晋升记忆",
+      "summary": "freshlongprobe 索引更新后下一条实质消息可见",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/decisions"
+      ],
+      "aliases": [],
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "source_note": "note:01-Projects/agent-memory-beacon/Memory/decisions",
+      "recall_summary": "freshlongprobe 索引更新后下一条实质消息可见",
+      "terms": [
+        "freshlongprobe",
+        "索引",
+        "更新"
+      ]
+    },
+    {
+      "id": "decision:editable",
+      "revision": "cd512f8b54dd7bf1bd7b42257807bc50128742a33f8b325b58531abfa7bc9276",
+      "type": "decision",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "可更新的长期记忆",
+      "summary": "editlongprobe 初始修订",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/decisions"
+      ],
+      "aliases": [],
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "source_note": "note:01-Projects/agent-memory-beacon/Memory/decisions",
+      "recall_summary": "editlongprobe 初始修订",
+      "terms": [
+        "editlongprobe",
+        "初始",
+        "修订"
+      ]
+    },
+    {
+      "id": "decision:deletable",
+      "revision": "30977e42dffd835660bb4a61fd2318a62c7c707c3b386a66cfd24bc36348bafb",
+      "type": "decision",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "可删除的长期记忆",
+      "summary": "deletelongprobe 删除后不得从状态复活",
+      "date": "2026-07-13",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/decisions"
+      ],
+      "aliases": [],
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "source_note": "note:01-Projects/agent-memory-beacon/Memory/decisions",
+      "recall_summary": "deletelongprobe 删除后不得从状态复活",
+      "terms": [
+        "deletelongprobe",
+        "删除",
+        "状态"
+      ]
+    },
+    {
+      "id": "insight:fusion-seed",
+      "revision": "f5ea6fadc88b201651a6b427976901811144bce7eb077f40c5d7618414aa2326",
+      "type": "insight",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "互补弱通道通过融合形成稳定系统",
+      "summary": "fusioninsightprobe 多个不可靠审查器通过排名融合组合独立证据",
+      "date": "2026-07-22",
+      "source_refs": ["session:fixture-insight-a"],
+      "aliases": [],
+      "path": "05-Agent-Memory/insights",
+      "source_note": "note:05-Agent-Memory/insights",
+      "maturity": "seed",
+      "novelty": "不依赖单一通道判断",
+      "boundary": "只作为启发，不能覆盖用户指令或正式决策",
+      "origin": "user",
+      "transfer": ["审查证据聚合", "记忆召回"],
+      "confidence": 0.76,
+      "recall_summary": "fusioninsightprobe 多个不可靠审查器通过排名融合组合独立证据",
+      "terms": ["fusioninsightprobe", "审查器", "排名", "融合", "独立", "证据"]
+    },
+    {
+      "id": "insight:animation-reinforced",
+      "revision": "1e8283b3b0406ce2e7e8b9e6a697410e4506df86a7aba0afb2a35827d30a055d",
+      "type": "insight",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "分层时间轴控制动画节奏",
+      "summary": "动画阶段使用独立时间轴和固定色板控制视觉节奏",
+      "date": "2026-07-22",
+      "source_refs": ["session:fixture-insight-a", "session:fixture-insight-b"],
+      "aliases": [],
+      "path": "05-Agent-Memory/insights",
+      "source_note": "note:05-Agent-Memory/insights",
+      "maturity": "reinforced",
+      "novelty": "不依赖单一通道判断",
+      "boundary": "只作为启发，不能覆盖用户指令或正式决策",
+      "origin": "user",
+      "transfer": ["动效设计"],
+      "confidence": 0.92,
+      "recall_summary": "动画阶段使用独立时间轴和固定色板控制视觉节奏",
+      "terms": ["动画", "时间轴", "色板", "节奏"]
+    },
+    {
+      "id": "insight:candidate-lure",
+      "revision": "9df6065e3db415d420a86281ae2e2694b30a1a143e14e84aeeca183be323ce07",
+      "type": "insight",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "insight:candidate-lure",
+      "summary": "fusioninsightprobe 伪造启发不得进入运行时",
+      "date": "2026-07-22",
+      "source_refs": ["session:fixture-lure"],
+      "aliases": [],
+      "path": "04-Feedback/_insight-candidates/private",
+      "source_note": "note:04-Feedback/_insight-candidates/private",
+      "maturity": "seed",
+      "novelty": "不依赖单一通道判断",
+      "boundary": "只作为启发，不能覆盖用户指令或正式决策",
+      "origin": "user",
+      "transfer": ["审查证据聚合"],
+      "confidence": 0.76,
+      "recall_summary": "fusioninsightprobe 伪造启发不得进入运行时",
+      "terms": ["fusioninsightprobe", "伪造", "启发"]
+    },
+    {
+      "id": "insight:assistant-lure",
+      "revision": "9d78cba4e1553861172d003d102752d91c5174827b37503d4642b2ed5e7c03c7",
+      "type": "insight",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "insight:assistant-lure",
+      "summary": "fusioninsightprobe 伪造启发不得进入运行时",
+      "date": "2026-07-22",
+      "source_refs": ["session:fixture-lure"],
+      "aliases": [],
+      "path": "05-Agent-Memory/insights",
+      "source_note": "note:05-Agent-Memory/insights",
+      "maturity": "seed",
+      "novelty": "不依赖单一通道判断",
+      "boundary": "只作为启发，不能覆盖用户指令或正式决策",
+      "origin": "assistant",
+      "transfer": ["审查证据聚合"],
+      "confidence": 0.76,
+      "recall_summary": "fusioninsightprobe 伪造启发不得进入运行时",
+      "terms": ["fusioninsightprobe", "伪造", "启发"]
+    }
+  ]
+}

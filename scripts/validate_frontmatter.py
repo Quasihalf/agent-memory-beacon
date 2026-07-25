@@ -9,8 +9,16 @@ Usage:
 """
 
 import os
+import re
 import sys
 import yaml
+
+from safety import VAULT_INTERNAL_DIR_NAMES
+
+FRONTMATTER_BLOCK = re.compile(
+    r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)",
+    re.DOTALL,
+)
 
 REQUIRED_FIELDS = {
     "rule": ["rule_id", "title", "status", "category", "created"],
@@ -29,13 +37,13 @@ REQUIRED_FIELDS = {
 
 def detect_template_type(frontmatter):
     """Infer template type from frontmatter fields."""
-    if "rule_id" in frontmatter:
-        return "rule"
     if "one_liner" in frontmatter:
         return "inbox_card"
+    if "rule_id" in frontmatter:
+        return "rule"
     if "session_id" in frontmatter and "summary_status" in frontmatter:
         return "session_summary"
-    if "decisions" in frontmatter and "project" in frontmatter:
+    if "decisions" in frontmatter:
         return "decisions"
     if "pitfalls" in frontmatter:
         return "pitfalls"
@@ -60,12 +68,12 @@ def validate_frontmatter(filepath):
     if not content.startswith('---'):
         return True, [], None  # No frontmatter, skip
 
-    parts = content.split('---', 2)
-    if len(parts) < 3:
+    match = FRONTMATTER_BLOCK.match(content)
+    if not match:
         return False, ["Malformed frontmatter delimiters"], None
 
     try:
-        fm = yaml.safe_load(parts[1])
+        fm = yaml.safe_load(match.group(1))
     except yaml.YAMLError as e:
         return False, [f"YAML parse error: {e}"], None
 
@@ -116,8 +124,7 @@ def main():
     files_to_check = []
     for root, dirs, files in os.walk(vault_path):
         # Skip non-content directories
-        dirs_to_skip = {'.git', '_rollback', '_logs', '_raw-sessions'}
-        dirs[:] = [d for d in dirs if d not in dirs_to_skip]
+        dirs[:] = [d for d in dirs if d not in VAULT_INTERNAL_DIR_NAMES]
         for f in files:
             if f.endswith('.md'):
                 filepath = os.path.join(root, f)

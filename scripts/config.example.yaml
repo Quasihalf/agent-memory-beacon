@@ -1,10 +1,15 @@
-# Agent Memory Vault v0.3.0-personal — Configuration
+# Agent Memory Beacon v0.5.0 — Configuration
 # ===============================================
 # Copy this file to config.yaml and fill in your paths.
 # config.yaml is git-ignored and never committed.
 
-version: "0.3.0-personal"
+version: "0.5.0"
+product_id: "agent_memory_beacon"
 agent: "codex"   # codex, claude, or zcode
+
+# SessionStart scans all configured local agents. A hook may still pass
+# --agent codex/claude/zcode to limit one Stop event to its own runtime.
+transcript_agents: ["codex", "claude", "zcode"]
 
 # --- REQUIRED PATHS ---
 
@@ -28,10 +33,20 @@ claude_project_path: ""
 # Path to Python 3 interpreter
 python_path: "python3"
 
+# Stable installed runtime used by Codex hooks and launchd after migration.
+runtime_root: "~/.local/share/agent-memory-beacon/runtime"
+
 # --- OPTIONAL PATHS ---
 
-# Path to CLAUDE.md or AGENTS.md for compiler step. Leave empty to skip file compile.
+# Legacy single target; context_targets below is preferred.
 claude_md_path: ""
+
+# Files that receive the same compiled Decision/Error/Favor/Workflow memory.
+# ZCode's current macOS build reads ~/.zcode/AGENTS.md as user instructions.
+context_targets:
+  - "~/.codex/AGENTS.md"
+  - "~/.claude/CLAUDE.md"
+  - "~/.zcode/AGENTS.md"
 
 # Markdown memory output used by Codex/macOS before a native memory backend exists.
 agent_memory_path: ""
@@ -43,6 +58,10 @@ memory_index_path: ""
 # Contains custom skills, shared AGENTS.md, safe plugin config, and manifests.
 # Never stores auth.json, OAuth tokens, connector authorizations, sessions, or logs.
 codex_profile_path: ""
+
+# Check Codex profile drift on SessionStart. If another account is missing skills
+# or plugin enablement, the hook prints a warning and suggested manual apply commands.
+codex_profile_check_on_start: true
 
 # Nutstore/backup sync path (optional — for backup.py cloud sync)
 backup_path: ""
@@ -60,6 +79,58 @@ project_keywords: {}
 # Set false if startup hooks need to be very fast.
 scan_on_start: true
 
+# macOS launchd fallback used when ZCode has no native Stop/SessionStart hooks.
+harvest_interval_seconds: 300
+
+# Bound one SessionStart/launchd batch so a large backlog cannot hold the
+# harvester lock indefinitely. Remaining transcripts are retried next run.
+harvest_start_max_transcripts: 32
+harvest_start_time_budget_seconds: 180
+
+# Dynamic Codex memory refresh. The UserPromptSubmit hook remains installed
+# when disabled and immediately returns an empty JSON object for quick rollback.
+memory_runtime:
+  enabled: true
+  index_path: "05-Agent-Memory/recall-index.json"
+  state_dir: "04-Feedback/_logs/recall-state"
+  log_path: "04-Feedback/_logs/recall-hook.jsonl"
+  hook_timeout_ms: 2000
+  internal_deadline_ms: 1800
+  stale_after_minutes: 30
+  duplicate_suppression_minutes: 60
+  topic_similarity_threshold: 0.25
+  topic_min_terms: 3
+  max_first_prompt: 8
+  max_refresh: 6
+  max_risk_or_error: 10
+  token_budget: 1500
+
+# Privacy-safe evidence about whether recalled memory helped. Events contain
+# only memory IDs/revisions, hashed sessions, trigger metadata, weak feedback
+# signals, latency, and token estimates. Prompt and memory bodies are excluded.
+memory_effectiveness:
+  enabled: true
+  event_log_path: "04-Feedback/_logs/memory-effectiveness.jsonl"
+  report_path: "04-Feedback/memory-effectiveness.md"
+  feedback_window_minutes: 15
+  max_report_items: 100
+
+# Candidate-only recommendations for moving repeated Decision/Error/Workflow
+# memory into a stronger executable owner. This never edits source or memory.
+memory_promotion:
+  enabled: true
+  proposal_dir: "04-Feedback/_promotion-proposals"
+  min_source_count: 3
+  min_exposure_count: 2
+  max_proposals_per_run: 10
+
+# Privacy defaults: track transcript fingerprints and redacted metadata only.
+# Full normalized message archives require an explicit opt-in.
+privacy:
+  store_raw_transcripts: false
+  store_transcript_metadata: true
+  store_message_samples: false
+
 # Personal memory judge. It keeps uncertain memories as candidates first, then
 # promotes repeated/high-confidence items into 05-Agent-Memory/personal-memory.md.
 personal_memory:
@@ -70,6 +141,65 @@ personal_memory:
   direct_threshold: 0.85
   promote_seen_count: 2
   similarity_threshold: 0.5
+
+# Adaptive skill preference learner. It watches explicit user skill calls such
+# as $humanizer, $manual-memory-capture, $superpowers:systematic-debugging, or
+# @pensive. First sightings become candidates; repeated similar scenes become
+# Codex-readable routing rules.
+skill_preferences:
+  enabled: true
+  candidate_dir: "04-Feedback/_skill-preferences"
+  formal_path: "05-Agent-Memory/skill-routing-rules.md"
+  promote_seen_count: 2
+  similarity_threshold: 0.5
+  initial_confidence: 0.58
+  repeat_increment: 0.18
+
+# Adaptive workflow memory. It learns repeated user corrections about how Codex
+# should work, such as "inspect GitHub source before judging a plugin" or
+# "after pensive finds fixable local code problems, continue with a verified fix."
+workflow_memory:
+  enabled: true
+  candidate_dir: "04-Feedback/_workflow-candidates"
+  formal_path: "05-Agent-Memory/workflow-rules.md"
+  promote_seen_count: 2
+  similarity_threshold: 0.5
+  initial_confidence: 0.58
+  repeat_increment: 0.18
+
+# Generative Insight learner. A complete, source-grounded one-shot idea becomes
+# a formal seed immediately. Repetition only reinforces it; candidates remain
+# excluded from runtime recall.
+insight_memory:
+  enabled: true
+  candidate_dir: "04-Feedback/_insight-candidates"
+  formal_path: "05-Agent-Memory/insights.md"
+  similarity_threshold: 0.58
+  direct_seed_threshold: 0.72
+  reinforce_source_count: 2
+  max_auto_recall: 2
+  recall_token_budget: 400
+
+# Semantic quality gate for explicit DECISION and ERROR tags. Durable and
+# complete tags become formal memory; uncertain tags are preserved here and
+# high-confidence non-memory is rejected. Neither path enters runtime recall.
+annotation_quality:
+  enabled: true
+  candidate_dir: "04-Feedback/_annotation-candidates"
+  report_path: "04-Feedback/memory-quality-report.md"
+
+# Transcript-derived failures remain audit-only candidates. They never enter
+# formal ERROR memory or runtime recall; set enabled false to stop new writes.
+error_evidence:
+  enabled: true
+  candidate_dir: "04-Feedback/_error-candidates"
+  excerpt_limit: 500
+  source_limit: 20
+
+memory_lifecycle:
+  proposal_dir: "04-Feedback/_lifecycle-proposals"
+  audit_path: "05-Agent-Memory/lifecycle-audit.md"
+  rollback_dir: "04-Feedback/_rollback/lifecycle"
 
 # --- API CONFIGURATION (for LLM deep analysis in analyzer.py) ---
 
@@ -91,7 +221,7 @@ api:
   max_retries: 3
   retry_backoff_sec: [2, 4, 8]
 
-# --- SCANNER SCHEDULE (informational — actual scheduling via Claude Code cron) ---
+# --- MACOS LAUNCHD SCANNER SCHEDULE ---
 
 scan:
   day: SUN

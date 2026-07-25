@@ -21,6 +21,8 @@ import json
 import sys
 import re
 
+from transcript_utils import parse_transcript
+
 # ── Configurable project detection patterns ──
 # Map project-name -> list of regex patterns to match in session text.
 # Customize this for your projects, or load from a YAML file with --patterns-file.
@@ -76,28 +78,22 @@ def score_session(jsonl_path, project_patterns=None):
     if project_patterns is None:
         project_patterns = PROJECT_PATTERNS
 
-    with open(jsonl_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-
     n_assistant = 0
     n_decisions = 0
     n_errors = 0
     all_text = ""
 
-    for line in lines:
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
+    parsed = parse_transcript(jsonl_path)
+    for message in parsed.get('messages', []):
+        if message.get('role') != 'assistant':
             continue
-        if rec.get('type') == 'assistant':
-            n_assistant += 1
-            msg = extract_text(rec)
-            all_text += msg + '\n'
-            # Formal annotations
-            if '[DECISION:' in msg or '[DECISION]' in msg:
-                n_decisions += 1
-            if '[ERROR:' in msg or '[ERROR]' in msg:
-                n_errors += 1
+        n_assistant += 1
+        msg = str(message.get('text') or '')
+        all_text += msg + '\n'
+        if '[DECISION:' in msg or '[DECISION]' in msg:
+            n_decisions += 1
+        if '[ERROR:' in msg or '[ERROR]' in msg:
+            n_errors += 1
 
     # Heuristic fallback if no formal annotations found
     if n_decisions == 0:
@@ -123,7 +119,11 @@ def score_session(jsonl_path, project_patterns=None):
                     detected_projects.add(proj)
                     break
 
-    project_coverage = 1.0
+    project_coverage = (
+        len(detected_projects) / max(len(project_patterns), 1)
+        if detected_projects
+        else 0.0
+    )
     total = (decision_density * 0.4 +
              error_density * 0.4 +
              project_coverage * 0.2)
@@ -138,7 +138,7 @@ def score_session(jsonl_path, project_patterns=None):
         'error_density': round(error_density, 4),
         'project_coverage': round(project_coverage, 2),
         'total_score': round(total, 4),
-        'detected_projects': list(detected_projects),
+        'detected_projects': sorted(detected_projects),
     }
 
 

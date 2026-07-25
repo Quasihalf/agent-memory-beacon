@@ -1,16 +1,88 @@
 #!/usr/bin/env python3
-"""Interactive setup script for Agent Memory Vault.
+"""Interactive setup script for Agent Memory Beacon.
 
 Creates the vault directory structure, prompts for paths and project names,
 generates config.yaml, copies templates, and validates everything.
 """
 
+import argparse
 import os
 import sys
 import json
+import stat
 import yaml
+
+from branding import (
+    CODE_PREFIX,
+    NEW_LAUNCHD_LABELS,
+    PRODUCT_NAME,
+    PRODUCT_VERSION,
+    default_vault_path,
+)
+from safety import (
+    OBSIDIAN_IGNORE_FILTERS,
+    durable_atomic_write,
+    ensure_directory_tree,
+    normalize_project_slug,
+    secure_read_bytes,
+)
 import shutil
 from pathlib import Path
+
+
+TEMPLATE_ROOT = Path(__file__).resolve().parents[1] / "templates" / "vault"
+VAULT_TEMPLATE_MANIFEST = (
+    ("00-Rules/_TEMPLATE.md", "00-Rules/_TEMPLATE.md"),
+    ("00-Rules/_inbox/_TEMPLATE.md", "00-Rules/_inbox/_TEMPLATE.md"),
+    (
+        "01-Projects/project-alpha/Feedback/_TEMPLATE.md",
+        "02-Templates/project/Feedback/_TEMPLATE.md",
+    ),
+    (
+        "01-Projects/project-alpha/Memory/cross-project-links.md",
+        "02-Templates/project/Memory/cross-project-links.md",
+    ),
+    (
+        "01-Projects/project-alpha/Memory/decisions.md",
+        "02-Templates/project/Memory/decisions.md",
+    ),
+    (
+        "01-Projects/project-alpha/Memory/pitfalls.md",
+        "02-Templates/project/Memory/pitfalls.md",
+    ),
+    (
+        "01-Projects/project-alpha/Memory/sessions/_TEMPLATE.md",
+        "02-Templates/project/Memory/sessions/_TEMPLATE.md",
+    ),
+    ("04-Feedback/growth-metrics.md", "04-Feedback/growth-metrics.md"),
+    (
+        "04-Feedback/weekly-reports/_TEMPLATE.md",
+        "04-Feedback/weekly-reports/_TEMPLATE.md",
+    ),
+    ("用户手册.md", "用户手册.md"),
+)
+PROJECT_TEMPLATE_MANIFEST = (
+    (
+        "01-Projects/project-alpha/Feedback/_TEMPLATE.md",
+        "Feedback/_TEMPLATE.md",
+    ),
+    (
+        "01-Projects/project-alpha/Memory/cross-project-links.md",
+        "Memory/cross-project-links.md",
+    ),
+    (
+        "01-Projects/project-alpha/Memory/decisions.md",
+        "Memory/decisions.md",
+    ),
+    (
+        "01-Projects/project-alpha/Memory/pitfalls.md",
+        "Memory/pitfalls.md",
+    ),
+    (
+        "01-Projects/project-alpha/Memory/sessions/_TEMPLATE.md",
+        "Memory/sessions/_TEMPLATE.md",
+    ),
+)
 
 
 def expand_path(path_str):
@@ -26,10 +98,10 @@ def prompt(prompt_text, default=None):
     return input(f"{prompt_text}: ").strip()
 
 
-def prompt_required(prompt_text, validate_exists=False):
+def prompt_required(prompt_text, validate_exists=False, default=None):
     """Prompt for a required value. Optionally validate that the path exists."""
     while True:
-        value = prompt(prompt_text)
+        value = prompt(prompt_text, default)
         if not value:
             print("  This field is required. Please enter a value.")
             continue
@@ -62,6 +134,11 @@ def detect_defaults():
     zcode_home = os.path.join(home, ".zcode")
     defaults['zcode_home'] = zcode_home
     defaults['zcode_db_path'] = os.path.join(zcode_home, "cli", "db", "db.sqlite")
+    defaults['context_targets'] = [
+        os.path.join(codex_home, "AGENTS.md"),
+        os.path.join(home, ".claude", "CLAUDE.md"),
+        os.path.join(zcode_home, "AGENTS.md"),
+    ]
 
     # Claude project path (kept for compatibility)
     claude_projects = os.path.join(home, ".claude", "projects")
@@ -87,8 +164,11 @@ def detect_defaults():
         defaults['settings_json'] = settings_path
 
     # Vault path
-    defaults['vault_path'] = os.path.join(home, "ObsidianBrain")
-    defaults['agent_memory_path'] = os.path.join(defaults['vault_path'], "05-Agent-Memory")
+    defaults["vault_path"] = str(default_vault_path(home))
+    defaults["agent_memory_path"] = os.path.join(
+        defaults["vault_path"],
+        "05-Agent-Memory",
+    )
 
     # CLAUDE.md / AGENTS.md
     for candidate in [
@@ -107,8 +187,8 @@ def detect_defaults():
 
 def create_vault_structure(vault_path):
     """Create the full vault directory structure with README files."""
-    vault = expand_path(vault_path)
-    os.makedirs(vault, exist_ok=True)
+    vault = os.path.abspath(expand_path(vault_path))
+    _ensure_real_directory(vault)
 
     dirs = [
         "00-Inbox",
@@ -126,38 +206,44 @@ def create_vault_structure(vault_path):
 
     for d in dirs:
         dpath = os.path.join(vault, d)
-        os.makedirs(dpath, exist_ok=True)
+        ensure_directory_tree(dpath, vault)
+
+    install_vault_templates(vault)
 
     obsidian_dir = os.path.join(vault, ".obsidian")
-    os.makedirs(obsidian_dir, exist_ok=True)
+    ensure_directory_tree(obsidian_dir, vault)
     app_json = os.path.join(obsidian_dir, "app.json")
     app_config = {}
-    if os.path.exists(app_json):
+    if os.path.lexists(app_json):
         try:
-            with open(app_json, "r", encoding="utf-8") as f:
-                app_config = json.load(f)
-        except Exception:
+            app_config = json.loads(
+                secure_read_bytes(app_json, 1_048_576, root=vault).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError):
             app_config = {}
     if not isinstance(app_config.get("userIgnoreFilters"), list):
         app_config["userIgnoreFilters"] = []
-    for ignore in ["04-Feedback/_raw-sessions/", "04-Feedback/_rollback/", "Users/"]:
+    for ignore in OBSIDIAN_IGNORE_FILTERS:
         if ignore not in app_config["userIgnoreFilters"]:
             app_config["userIgnoreFilters"].append(ignore)
-    with open(app_json, "w", encoding="utf-8") as f:
-        json.dump(app_config, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    durable_atomic_write(
+        app_json,
+        json.dumps(app_config, ensure_ascii=False, indent=2) + "\n",
+        mode=0o600,
+        root=vault,
+    )
 
     # Write vault README.md with frontmatter
     readme_content = f"""---
-vault_version: "0.3.0-personal"
+vault_version: "{PRODUCT_VERSION}"
 created: {__import__('datetime').datetime.now().strftime('%Y-%m-%d')}
-vault_name: "Agent Memory Vault"
-description: "Personal Obsidian memory vault for automatically harvested Codex and Claude Code decisions, errors, and session summaries"
+vault_name: "{PRODUCT_NAME}"
+description: "User-owned Obsidian memory for local AI agents"
 ---
 
-# Agent Memory Vault
+# {PRODUCT_NAME}
 
-> Personal AI memory vault for Codex and Claude Code.
+> User-owned long-term memory for Codex and compatible local agents.
 > The vault stores reusable decisions, resolved errors, and session summaries instead of raw chat dumps.
 
 ## Structure
@@ -178,126 +264,71 @@ description: "Personal Obsidian memory vault for automatically harvested Codex a
 3. Rules start in `00-Rules/_inbox/` as approval cards
 4. The weekly scanner rebuilds `03-Maps/` automatically
 """
-    with open(os.path.join(vault, "README.md"), 'w', encoding='utf-8') as f:
-        f.write(readme_content)
+    write_if_missing(os.path.join(vault, "README.md"), readme_content, root=vault)
 
-    # Write error-taxonomy.md template
-    taxonomy_content = """---
-version: "1.0"
-categories:
-  - name: env
-    english: "Environment / Platform"
-    chinese: "环境与平台"
-    subcategories:
-      - env_os_path_separator
-      - env_encoding_mismatch
-      - env_permission_denied
-      - env_dependency_conflict
-      - env_network_restriction
-  - name: api
-    english: "API / Interface"
-    chinese: "接口调用"
-    subcategories:
-      - api_parameter_error
-      - api_auth_failure
-      - api_rate_limit
-      - api_endpoint_change
-      - api_unexpected_response
-  - name: data
-    english: "Data / Format"
-    chinese: "数据格式"
-    subcategories:
-      - data_missing_column
-      - data_type_mismatch
-      - data_corrupted_file
-      - data_encoding_garbled
-      - data_schema_violation
-  - name: lang
-    english: "Language / Runtime"
-    chinese: "语言运行时"
-    subcategories:
-      - lang_version_incompat
-      - lang_package_conflict
-      - lang_segfault_crash
-      - lang_memory_overflow
-      - lang_silent_failure
-  - name: logic
-    english: "Logic / Algorithm"
-    chinese: "逻辑算法"
-    subcategories:
-      - logic_off_by_one
-      - logic_assumption_violated
-      - logic_edge_case_unhandled
-      - logic_race_condition
-      - logic_infinite_loop
-  - name: pipeline
-    english: "Pipeline / Workflow"
-    chinese: "流程编排"
-    subcategories:
-      - pipeline_step_order_wrong
-      - pipeline_missing_dependency
-      - pipeline_output_format_mismatch
-      - pipeline_intermediate_file_stale
-      - pipeline_parallel_conflict
-  - name: render
-    english: "Rendering / Output"
-    chinese: "渲染输出"
-    subcategories:
-      - render_color_greyscale
-      - render_text_cropped
-      - render_font_missing
-      - render_resolution_mismatch
-      - render_device_driver_issue
-  - name: network
-    english: "Network / Remote"
-    chinese: "网络远程"
-    subcategories:
-      - network_tcp_reset
-      - network_ssl_handshake_failure
-      - network_timeout
-      - network_dns_failure
-      - network_firewall_block
-  - name: config
-    english: "Configuration"
-    chinese: "配置管理"
-    subcategories:
-      - config_key_missing
-      - config_type_wrong
-      - config_conflict_between_files
-      - config_stale_cache
-      - config_secret_leaked
-  - name: tool
-    english: "Tool / External"
-    chinese: "外部工具"
-    subcategories:
-      - tool_binary_not_found
-      - tool_version_mismatch
-      - tool_flag_changed
-      - tool_output_parse_error
-      - tool_lock_contention
-  - name: human
-    english: "Human / Process"
-    chinese: "人为流程"
-    subcategories:
-      - human_forgot_checkpoint
-      - human_skipped_verification
-      - human_wrong_order
-      - human_assumed_default
-      - human_typo
+    today = __import__('datetime').datetime.now().strftime('%Y-%m-%d')
+    map_placeholders = {
+        "timeline.md": f"""---
+title: "时间线 / Timeline"
+updated: {today}
+auto_generated: true
 ---
 
-# Error Taxonomy
+# 时间线 / Timeline
 
-> 11 categories x 5 subcategories each = 55 error types.
-> Customize subcategories to match your stack.
-> 11大类 x 每类5个子类 = 55种错误类型。根据你的技术栈自定义子类。
+_首次周扫描后自动生成。_
+""",
+        "topic-index.md": f"""---
+title: "主题索引 / Topic Index"
+updated: {today}
+auto_generated: true
+---
 
-## How to Use
+# 主题索引 / Topic Index
 
-When writing session summaries, tag errors with one of these subcategory codes in the `errors_encountered` frontmatter field. The scanner's analyzer will count occurrences and propose rules when >=2 sessions share the same error type.
+_首次周扫描后自动生成。_
+""",
+    }
+    for filename, content in map_placeholders.items():
+        write_if_missing(
+            os.path.join(vault, "03-Maps", filename),
+            content,
+            root=vault,
+        )
+
+    personal_memory = """---
+title: Personal Memory
+generated_by: memory_judge.py
+---
+
+# Personal Memory
+
+Promoted memories from repeated or high-confidence conversations.
+
+## Related
+
+- [[00-Inbox/Agent Memory Index|Agent Memory Index]]
+- [[03-Maps/timeline|Timeline]]
+- [[03-Maps/topic-index|Topic Index]]
 """
-    with open(os.path.join(vault, "04-Feedback", "error-taxonomy.md"), 'w', encoding='utf-8') as f:
-        f.write(taxonomy_content)
+    write_if_missing(
+        os.path.join(vault, "05-Agent-Memory", "personal-memory.md"),
+        personal_memory,
+        root=vault,
+    )
+
+    # Keep fresh Vaults on the same taxonomy contract as the managed patch.
+    taxonomy_content = read_template(
+        "04-Feedback/error-taxonomy.md"
+    ).replace(
+        "{YYYY-MM-DD}",
+        __import__('datetime').datetime.now().strftime('%Y-%m-%d'),
+    )
+    write_if_missing(
+        os.path.join(vault, "04-Feedback", "error-taxonomy.md"),
+        taxonomy_content,
+        root=vault,
+    )
 
     # Write heartbeat.md placeholder
     heartbeat_content = f"""---
@@ -305,6 +336,8 @@ last_scan: null
 scan_status: never_run
 sessions_processed: 0
 processed_sessions: {{}}
+backed_up_sessions: {{}}
+harvested_sessions: {{}}
 errors: []
 script_version: "1.0.0"
 ---
@@ -313,61 +346,159 @@ script_version: "1.0.0"
 
 The weekly scanner has not run yet. Run `runner.py` to start the first scan.
 """
-    with open(os.path.join(vault, "04-Feedback", "heartbeat.md"), 'w', encoding='utf-8') as f:
-        f.write(heartbeat_content)
+    write_if_missing(
+        os.path.join(vault, "04-Feedback", "heartbeat.md"),
+        heartbeat_content,
+        root=vault,
+    )
+    initialize_memory_indexes(vault)
 
     return vault
 
 
+def install_vault_templates(vault):
+    today = __import__('datetime').datetime.now().strftime('%Y-%m-%d')
+    for source_name, destination_name in VAULT_TEMPLATE_MANIFEST:
+        destination = os.path.join(vault, destination_name)
+        ensure_directory_tree(os.path.dirname(destination), vault)
+        content = read_template(source_name)
+        if source_name.startswith("01-Projects/project-alpha/"):
+            content = render_project_template(content, "{project}")
+        content = content.replace("{YYYY-MM-DD}", today)
+        write_if_missing(destination, content, root=vault)
+
+
+def read_template(relative_path):
+    source = TEMPLATE_ROOT / relative_path
+    return secure_read_bytes(
+        source,
+        2 * 1024 * 1024,
+        root=TEMPLATE_ROOT,
+    ).decode("utf-8")
+
+
+def render_project_template(content, project):
+    return content.replace("{project-alpha}", project).replace(
+        "project-alpha",
+        project,
+    )
+
+
+def initialize_memory_indexes(vault_path):
+    """Create the derived runtime indexes required by a fresh installation."""
+    vault = expand_path(vault_path)
+    recall_path = os.path.join(vault, "05-Agent-Memory", "recall-index.json")
+    if os.path.lexists(recall_path):
+        if os.path.islink(recall_path) or not os.path.isfile(recall_path):
+            raise ValueError("recall index path must be a regular file")
+        return False
+
+    from knowledge_index import rebuild_vault_knowledge_indexes
+
+    rebuild_vault_knowledge_indexes({"vault_path": vault})
+    if os.path.islink(recall_path) or not os.path.isfile(recall_path):
+        raise RuntimeError("fresh setup did not create a valid recall index file")
+    return True
+
+
+def write_if_missing(path, content, root=None):
+    if os.path.lexists(path):
+        secure_read_bytes(path, 0, root=root)
+        return False
+    durable_atomic_write(
+        path,
+        content,
+        mode=0o644,
+        root=root,
+        preserve_existing_mode=False,
+    )
+    return True
+
+
+def _ensure_real_directory(path):
+    if os.path.lexists(path):
+        current = os.lstat(path)
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode):
+            raise ValueError(f"Vault root must be a real directory: {path}")
+    else:
+        os.makedirs(path, mode=0o700)
+    ensure_directory_tree(path, path)
+    return path
+
+
 def create_project_folders(vault_path, project_names):
     """Create project directories with Memory/sessions/ subdirectories."""
-    vault = expand_path(vault_path)
+    vault = os.path.abspath(expand_path(vault_path))
+    _ensure_real_directory(vault)
     projects_dir = os.path.join(vault, "01-Projects")
+    ensure_directory_tree(projects_dir, vault)
     created = []
 
     for name in project_names:
         name = name.strip().replace(" ", "-").lower()
+        name = normalize_project_slug(name)
         if not name:
             continue
         proj_dir = os.path.join(projects_dir, name)
-        memory_dir = os.path.join(proj_dir, "Memory")
-        sessions_dir = os.path.join(memory_dir, "sessions")
-
-        os.makedirs(proj_dir, exist_ok=True)
-        os.makedirs(sessions_dir, exist_ok=True)
-
-        # Create decisions.md
-        decisions_path = os.path.join(memory_dir, "decisions.md")
-        if not os.path.exists(decisions_path):
-            with open(decisions_path, 'w', encoding='utf-8') as f:
-                f.write(f"""---
-project: "{name}"
-decisions: []
-updated: {__import__('datetime').datetime.now().strftime('%Y-%m-%d')}
----
-
-# Decisions — {name}
-
-Key technical decisions made across sessions.
-""")
-
-        # Create pitfalls.md
-        pitfalls_path = os.path.join(memory_dir, "pitfalls.md")
-        if not os.path.exists(pitfalls_path):
-            with open(pitfalls_path, 'w', encoding='utf-8') as f:
-                f.write(f"""---
-project: "{name}"
-pitfalls: []
-updated: {__import__('datetime').datetime.now().strftime('%Y-%m-%d')}
----
-
-# Pitfalls — {name}
-
-Hard-won lessons and known issues.
-""")
+        today = __import__('datetime').datetime.now().strftime('%Y-%m-%d')
+        for source_name, destination_name in PROJECT_TEMPLATE_MANIFEST:
+            destination = os.path.join(proj_dir, destination_name)
+            ensure_directory_tree(os.path.dirname(destination), vault)
+            content = (
+                render_project_template(read_template(source_name), name).replace(
+                    "{YYYY-MM-DD}",
+                    today,
+                )
+            )
+            write_if_missing(destination, content, root=vault)
 
         created.append(name)
 
+    return created
+
+
+def add_projects_to_config(config_path, project_names):
+    """Create project templates and atomically add their slugs to config."""
+    path = os.path.abspath(expand_path(config_path))
+    if os.path.islink(path) or not os.path.isfile(path):
+        raise ValueError(f"config must be a regular file: {path}")
+    config_root = os.path.dirname(path)
+    try:
+        config = yaml.safe_load(
+            secure_read_bytes(path, 4 * 1024 * 1024, root=config_root).decode(
+                "utf-8"
+            )
+        ) or {}
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ValueError("config.yaml is not valid UTF-8 YAML") from exc
+    if not isinstance(config, dict):
+        raise ValueError("config.yaml must contain a mapping")
+    vault_path = str(config.get("vault_path") or "").strip()
+    if not vault_path:
+        raise ValueError("config.yaml vault_path is required")
+    existing = config.get("projects") or []
+    if not isinstance(existing, list):
+        raise ValueError("config.yaml projects must be a list")
+
+    created = create_project_folders(vault_path, project_names)
+    updated = []
+    for project in [*existing, *created]:
+        project = str(project or "").strip()
+        if project and project not in updated:
+            updated.append(project)
+    if updated != existing:
+        config["projects"] = updated
+        durable_atomic_write(
+            path,
+            yaml.safe_dump(
+                config,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+            ),
+            mode=0o600,
+            root=config_root,
+        )
     return created
 
 
@@ -416,10 +547,34 @@ def validate_setup(vault_path, config_path):
     return errors
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Initialize Agent Memory Beacon or add a project",
+    )
+    parser.add_argument(
+        "--add-project",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="create a project from templates and add it to config.yaml",
+    )
+    parser.add_argument(
+        "--config",
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml"),
+        help="config.yaml used by --add-project",
+    )
+    args = parser.parse_args(argv)
+    if args.add_project:
+        created = add_projects_to_config(args.config, args.add_project)
+        if not created:
+            parser.error("--add-project did not contain a valid project name")
+        print("Projects ready: " + ", ".join(created))
+        print(f"Config updated: {os.path.abspath(expand_path(args.config))}")
+        return 0
+
     print("=" * 60)
-    print("  Agent Memory Vault — Setup")
-    print("  Personal Codex/Claude Code memory vault")
+    print(f"  {PRODUCT_NAME} — Setup")
+    print("  User-owned long-term memory for Codex and compatible local agents")
     print("=" * 60)
     print()
 
@@ -431,10 +586,9 @@ def main():
 
     vault_path = prompt_required(
         f"Vault path (where the Obsidian vault lives)",
-        validate_exists=False
+        validate_exists=False,
+        default=defaults["vault_path"],
     )
-    if vault_path and not expand_path(vault_path):
-        vault_path = defaults['vault_path']
 
     agent = prompt(
         "Agent runtime (codex/claude/zcode)",
@@ -461,10 +615,13 @@ def main():
         defaults['python_path']
     )
 
-    claude_md_path = prompt(
-        "Path to CLAUDE.md or AGENTS.md (optional compiled block target)",
-        defaults.get('claude_md_path', '')
+    additional_context_target = prompt(
+        "Additional CLAUDE.md or AGENTS.md compile target (optional)",
+        ""
     )
+    context_targets = list(defaults['context_targets'])
+    if additional_context_target:
+        context_targets.append(additional_context_target)
 
     agent_memory_path = prompt(
         "Agent Memory markdown directory",
@@ -521,7 +678,7 @@ def main():
     print(f"  ZCode DB:          {zcode_db_path or '(not set)'}")
     print(f"  Claude projects:   {claude_project_path or '(not set)'}")
     print(f"  Python:            {python_path}")
-    print(f"  Compile target:    {claude_md_path or '(not set)'}")
+    print(f"  Compile targets:   {context_targets}")
     print(f"  Agent Memory:      {agent_memory_path}")
     print(f"  API settings:      {settings_json or '(not set)'}")
     print(f"  Projects:          {project_names if project_names else '(none — add later)'}")
@@ -548,21 +705,29 @@ def main():
 
     # Step 8: Generate config.yaml
     config = {
-        'version': '0.3.0-personal',
+        'version': PRODUCT_VERSION,
+        'product_id': CODE_PREFIX,
         'agent': agent,
+        'transcript_agents': ['codex', 'claude', 'zcode'],
         'vault_path': vault_path,
         'codex_home': defaults['codex_home'],
         'codex_sessions_path': codex_sessions_path,
         'zcode_home': defaults['zcode_home'],
         'zcode_db_path': zcode_db_path,
         'claude_project_path': claude_project_path,
-        'claude_md_path': claude_md_path,
+        'claude_md_path': '',
+        'context_targets': context_targets,
         'agent_memory_path': agent_memory_path,
         'codex_profile_path': os.path.join(agent_memory_path, 'codex-profile'),
         'python_path': python_path,
         'projects': created if project_names else [],
         'project_keywords': {},
         'scan_on_start': True,
+        'privacy': {
+            'store_raw_transcripts': False,
+            'store_transcript_metadata': True,
+            'store_message_samples': False,
+        },
         'personal_memory': {
             'enabled': True,
             'candidate_dir': '04-Feedback/_memory-candidates',
@@ -593,8 +758,17 @@ def main():
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(script_dir, "config.yaml")
-    with open(config_path, 'w', encoding='utf-8') as f:
-        yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    durable_atomic_write(
+        config_path,
+        yaml.safe_dump(
+            config,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+        ),
+        mode=0o600,
+        preserve_existing_mode=False,
+    )
     print(f"  Config written to: {config_path}")
 
     # Step 9: Validate
@@ -617,19 +791,24 @@ def main():
     print("Next steps:")
     print()
     print(f"  1. Open Obsidian and load vault: {vault_path}")
-    print(f"  2. Add more projects: create folders under 01-Projects/")
-    print(f"     Each project needs: Memory/sessions/  Memory/decisions.md  Memory/pitfalls.md")
+    print(f"  2. Add more projects with: python setup.py --add-project NAME")
     print(f"  3. Customize error taxonomy: 04-Feedback/error-taxonomy.md")
     print(f"  4. Customize topic map: edit config.yaml -> topic_map")
-    print(f"  5. Run first scan:")
+    print(f"  5. Verify and install the stable Codex runtime:")
     print(f"     cd {script_dir}")
-    print(f"     python runner.py --full")
-    print(f"  6. Install Codex hooks + AGENTS.md patch:")
-    print(f"     python install_codex.py --dry-run")
-    print(f"     python install_codex.py")
-    print(f"  7. Set up weekly cron/scheduled task for runner.py")
+    print(f"     python install_runtime.py --dry-run")
+    print(f"     python install_runtime.py --verify-release")
+    print(f"     python install_runtime.py")
+    print(f"  6. Optional collection-only compatibility:")
+    print(f"     python install_claude.py")
+    print(f"     python install_zcode.py --context-only")
+    print(
+        f'  7. Verify launchd jobs: launchctl print gui/$(id -u)/'
+        f'{NEW_LAUNCHD_LABELS["harvest"]}'
+    )
     print()
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

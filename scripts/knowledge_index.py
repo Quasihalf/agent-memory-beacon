@@ -7,15 +7,46 @@ This is a conservative v4-inspired layer for the Obsidian-vault workflow:
 import hashlib
 import json
 import os
+import posixpath
 import re
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
 import yaml
 
+from annotation_quality import (
+    annotation_candidate_roots,
+    collapse_runtime_duplicates,
+    filter_runtime_quality,
+    is_annotation_candidate_path,
+)
+from experience_memory import build_experience_bundles
+from memory_schema import (
+    RUNTIME_SCHEMA_VERSION,
+    canonical_project,
+    formal_identity_key,
+    is_runtime_record,
+    is_valid_active_project_record,
+    is_valid_formal_project_record,
+    merge_formal_records,
+    normalize_formal_record,
+    parse_active_formal_section,
+    parse_formal_section,
+    suppress_unmet_dependencies,
+)
+from safety import (
+    VAULT_INTERNAL_DIR_NAMES,
+    assert_no_symlink_components,
+    durable_atomic_write,
+    ensure_directory_tree,
+    safe_vault_path,
+    split_frontmatter_text,
+)
+
 
 CST = timezone(timedelta(hours=8))
 DEFAULT_OUTPUT_DIR = "05-Agent-Memory"
+DEFAULT_RECALL_INDEX_PATH = "05-Agent-Memory/recall-index.json"
 MAX_TERMS_PER_NOTE = 100
 MAX_ENTRIES_PER_TERM = 20
 GENERATED_INDEX_FILES = {
@@ -23,6 +54,14 @@ GENERATED_INDEX_FILES = {
     "global-atoms.md",
     "recall-context.md",
 }
+CONFIGURABLE_ADAPTIVE_NOTE_TYPES = frozenset(
+    {
+        "personal-memory",
+        "skill-routing-rules",
+        "workflow-rules",
+        "insights",
+    }
+)
 STOPWORDS = {
     "the",
     "and",
@@ -64,6 +103,14 @@ CHINESE_KEY_TERMS = [
     "记忆",
     "图谱",
     "自动化",
+    "技能偏好",
+    "技能路由",
+    "流程记忆",
+    "行为规则",
+    "先查源码",
+    "直接修复",
+    "何时用",
+    "何时不用",
     "错误",
     "决策",
     "记录",
@@ -83,9 +130,19 @@ def rebuild_vault_knowledge_indexes(cfg):
         return {"keyword_terms": 0, "global_atoms": 0, "written": []}
 
     output_dir = os.path.join(vault, DEFAULT_OUTPUT_DIR)
-    os.makedirs(output_dir, exist_ok=True)
+    ensure_directory_tree(output_dir, vault)
 
-    notes = collect_indexable_notes(vault)
+    candidate_roots = (
+        *error_evidence_candidate_roots(cfg),
+        *annotation_candidate_roots(cfg),
+        *insight_candidate_roots(cfg),
+        *promotion_proposal_roots(cfg),
+    )
+    notes = collect_indexable_notes(
+        vault,
+        excluded_roots=candidate_roots,
+        additional_note_types=configured_adaptive_formal_paths(cfg),
+    )
     keyword_index = build_keyword_index(notes)
     atoms = build_global_atoms(vault)
     recall_index = build_recall_index(notes)
@@ -95,19 +152,29 @@ def rebuild_vault_knowledge_indexes(cfg):
     keyword_md_path = os.path.join(output_dir, "keyword-index.md")
     atoms_path = os.path.join(output_dir, "global-atoms.json")
     atoms_md_path = os.path.join(output_dir, "global-atoms.md")
-    recall_path = os.path.join(output_dir, "recall-index.json")
+    recall_path = configured_recall_index_path(cfg)
+    ensure_directory_tree(os.path.dirname(recall_path), vault)
     graph_path = os.path.join(output_dir, "memory-graph.json")
     recall_md_path = os.path.join(output_dir, "recall-context.md")
 
-    atomic_write_json(keyword_path, keyword_index)
-    atomic_write_text(keyword_md_path, render_keyword_index_markdown(keyword_index))
-    atomic_write_json(atoms_path, atoms)
-    atomic_write_text(atoms_md_path, render_global_atoms_markdown(atoms))
-    atomic_write_json(recall_path, recall_index)
-    atomic_write_json(graph_path, memory_graph)
+    atomic_write_json(keyword_path, keyword_index, root=vault)
+    atomic_write_text(
+        keyword_md_path,
+        render_keyword_index_markdown(keyword_index),
+        root=vault,
+    )
+    atomic_write_json(atoms_path, atoms, root=vault)
+    atomic_write_text(
+        atoms_md_path,
+        render_global_atoms_markdown(atoms),
+        root=vault,
+    )
+    atomic_write_json(recall_path, recall_index, root=vault)
+    atomic_write_json(graph_path, memory_graph, root=vault)
     atomic_write_text(
         recall_md_path,
         render_recall_context_markdown(recall_index, memory_graph),
+        root=vault,
     )
 
     return {
@@ -128,11 +195,21 @@ def rebuild_vault_knowledge_indexes(cfg):
     }
 
 
-def collect_indexable_notes(vault):
+def collect_indexable_notes(
+    vault,
+    excluded_roots=None,
+    additional_note_types=None,
+):
     notes = []
+    restrict_adaptive_paths = additional_note_types is not None
+    additional_note_types = {
+        os.path.abspath(path): note_type
+        for path, note_type in dict(additional_note_types or {}).items()
+    }
+    seen_paths = set()
+    excluded_roots = tuple(excluded_roots or (DEFAULT_ERROR_EVIDENCE_DIR,))
     roots = [
         os.path.join(vault, "01-Projects"),
-        os.path.join(vault, "04-Feedback", "_memory-candidates"),
         os.path.join(vault, "05-Agent-Memory"),
     ]
     for root in roots:
@@ -143,22 +220,61 @@ def collect_indexable_notes(vault):
         else:
             paths = []
             for current, dirs, files in os.walk(root):
-                dirs[:] = [d for d in dirs if d not in {"_raw-sessions", "_rollback", ".git"}]
+                dirs[:] = [
+                    directory
+                    for directory in dirs
+                    if directory not in VAULT_INTERNAL_DIR_NAMES
+                    and not os.path.islink(os.path.join(current, directory))
+                    and not is_error_evidence_candidate_path(
+                        os.path.relpath(
+                            os.path.join(current, directory),
+                            vault,
+                        ).replace(os.sep, "/"),
+                        excluded_roots,
+                    )
+                ]
                 for filename in files:
                     if filename.endswith(".md"):
                         paths.append(os.path.join(current, filename))
         for path in sorted(paths):
+            absolute_path = os.path.abspath(path)
+            if absolute_path in seen_paths:
+                continue
+            rel_path = os.path.relpath(path, vault).replace(os.sep, "/")
+            if os.path.islink(path):
+                continue
+            if is_error_evidence_candidate_path(rel_path, excluded_roots):
+                continue
+            if (
+                restrict_adaptive_paths
+                and absolute_path not in additional_note_types
+                and note_type_from_path(rel_path.removesuffix(".md"))
+                in CONFIGURABLE_ADAPTIVE_NOTE_TYPES
+            ):
+                continue
             if os.path.basename(path).startswith("_"):
                 continue
             if os.path.basename(path) in GENERATED_INDEX_FILES:
                 continue
-            note = read_note(path, vault)
-            if note:
+            note = read_note(
+                path,
+                vault,
+                note_type=additional_note_types.get(absolute_path),
+            )
+            if note and is_indexable_note(note):
                 notes.append(note)
+                seen_paths.add(absolute_path)
+    for path, note_type in sorted(additional_note_types.items()):
+        if path in seen_paths or not os.path.isfile(path) or os.path.islink(path):
+            continue
+        note = read_note(path, vault, note_type=note_type)
+        if note and is_indexable_note(note):
+            notes.append(note)
+            seen_paths.add(path)
     return notes
 
 
-def read_note(path, vault):
+def read_note(path, vault, note_type=None):
     try:
         with open(path, "r", encoding="utf-8") as handle:
             content = handle.read()
@@ -178,7 +294,7 @@ def read_note(path, vault):
         "path": rel_path,
         "title": str(title),
         "project": str(fm.get("project", "")),
-        "type": note_type_from_path(rel_path),
+        "type": note_type or note_type_from_path(rel_path),
         "text": searchable_text(fm, body),
         "frontmatter": fm,
         "body": body,
@@ -186,10 +302,56 @@ def read_note(path, vault):
     }
 
 
+def configured_adaptive_formal_paths(cfg):
+    vault = cfg.get("vault_path")
+    if not vault:
+        return {}
+    configured = {}
+    for section, default, note_type in (
+        (
+            "personal_memory",
+            "05-Agent-Memory/personal-memory.md",
+            "personal-memory",
+        ),
+        (
+            "skill_preferences",
+            "05-Agent-Memory/skill-routing-rules.md",
+            "skill-routing-rules",
+        ),
+        (
+            "workflow_memory",
+            "05-Agent-Memory/workflow-rules.md",
+            "workflow-rules",
+        ),
+        (
+            "insight_memory",
+            "05-Agent-Memory/insights.md",
+            "insights",
+        ),
+    ):
+        raw = (cfg.get(section) or {}).get("formal_path", default)
+        try:
+            configured[safe_vault_path(vault, raw)] = note_type
+        except ValueError:
+            continue
+    return configured
+
+
+def configured_recall_index_path(cfg):
+    vault = cfg.get("vault_path")
+    raw = (cfg.get("memory_runtime") or {}).get(
+        "index_path",
+        DEFAULT_RECALL_INDEX_PATH,
+    )
+    return safe_vault_path(vault, raw)
+
+
 def build_keyword_index(notes):
     keywords = defaultdict(list)
     now = datetime.now(CST).isoformat()
     for note in notes:
+        if not is_indexable_note(note):
+            continue
         terms = extract_terms(
             " ".join([note["title"], note["project"], note["text"]]),
             limit=MAX_TERMS_PER_NOTE,
@@ -220,9 +382,44 @@ def build_keyword_index(notes):
 
 
 def build_recall_index(notes):
-    units = []
+    records = []
+    inactive_identities = set()
+    hard_tombstone_identities = set()
+    authorized_successors = defaultdict(set)
     for note in notes:
-        units.extend(recall_units_from_note(note))
+        if not is_indexable_note(note):
+            continue
+        records.extend(recall_units_from_note(note))
+        for record in inactive_recall_units_from_note(note):
+            identity = formal_identity_key(record)
+            inactive_identities.add(identity)
+            successor = str(record.get("superseded_by") or "").strip()
+            if record.get("status") == "superseded" and successor:
+                authorized_successors[identity].add(successor)
+            else:
+                hard_tombstone_identities.add(identity)
+
+    candidates = [
+        record
+        for record in merge_formal_records(records)
+        if is_runtime_record(record)
+        and not is_session_memory_path(record.get("path"))
+        and (
+            formal_identity_key(record) not in inactive_identities
+            or (
+                formal_identity_key(record) not in hard_tombstone_identities
+                and record.get("id")
+                in authorized_successors.get(formal_identity_key(record), set())
+            )
+        )
+    ]
+    quality_eligible, suppressed_quality = filter_runtime_quality(candidates)
+    eligible, suppressed = suppress_unmet_dependencies(quality_eligible)
+    eligible, duplicate_groups = collapse_runtime_duplicates(eligible)
+    units = [
+        enrich_runtime_unit(record)
+        for record in eligible
+    ]
 
     units.sort(
         key=lambda item: (
@@ -244,95 +441,243 @@ def build_recall_index(notes):
             append_unique(projects[unit["project"]], unit["id"])
         append_unique(types[unit["type"]], unit["id"])
 
+    experience_bundles = build_experience_bundles(units)
+
     return {
-        "schema_version": "1.0",
+        "schema_version": RUNTIME_SCHEMA_VERSION,
         "generated_by": "knowledge_index.py",
         "generated_at": datetime.now(CST).isoformat(),
         "unit_count": len(units),
         "units": units,
+        "experience_bundles": experience_bundles,
+        "suppressed_dependencies": suppressed,
+        "suppressed_quality": suppressed_quality,
+        "duplicate_groups": duplicate_groups,
         "terms": {k: v[:50] for k, v in sorted(terms.items())},
         "projects": {k: v[:100] for k, v in sorted(projects.items())},
         "types": {k: v[:100] for k, v in sorted(types.items())},
     }
 
 
+def is_session_memory_path(path):
+    normalized = "/" + str(path or "").replace("\\", "/").lstrip("/")
+    canonical = posixpath.normpath(normalized)
+    marker = "/memory/sessions/"
+    return marker in normalized.casefold() or marker in canonical.casefold()
+
+
 def recall_units_from_note(note):
+    if not is_indexable_note(note):
+        return []
+    if note.get("type") == "session":
+        return []
     fm = note.get("frontmatter") or {}
     body = note.get("body") or ""
-    units = [
-        make_recall_unit(
-            unit_type=note["type"],
-            title=note["title"],
-            content=note["text"],
-            path=note["path"],
-            project=note.get("project", ""),
-            date=fm.get("date") or fm.get("last_seen") or "",
-            source_note=f"note:{note['path']}",
-        )
-    ]
+    units = []
+    source_note = f"note:{note['path']}"
+    if note["type"] in {
+        "decisions",
+        "pitfalls",
+        "personal-memory",
+        "skill-routing-rules",
+        "workflow-rules",
+        "insights",
+    } and fm.get("schema_version") != RUNTIME_SCHEMA_VERSION:
+        return []
 
-    for decision in list_items(fm, "decisions_made", "decisions"):
-        text = str(decision.get("text", "")).strip()
-        context = str(decision.get("context", "")).strip()
-        if not text and not context:
-            continue
-        units.append(
-            make_recall_unit(
-                unit_type="decision",
-                title=text or "Decision",
-                content=f"{text}\ncontext: {context}",
-                path=note["path"],
-                project=note.get("project", ""),
-                date=fm.get("date") or "",
-                source_note=f"note:{note['path']}",
-            )
-        )
-
-    for error in list_items(fm, "errors_encountered", "pitfalls"):
-        err_type = str(error.get("type", "")).strip()
-        resolution = str(error.get("resolution", "")).strip()
-        if not err_type and not resolution:
-            continue
-        units.append(
-            make_recall_unit(
-                unit_type="error",
-                title=err_type or "Error",
-                content=f"{err_type}\nresolution: {resolution}",
-                path=note["path"],
-                project=note.get("project", ""),
-                date=fm.get("date") or "",
-                source_note=f"note:{note['path']}",
-            )
-        )
-
-    if note["type"] == "memory-candidate" and fm.get("content"):
-        units.append(
-            make_recall_unit(
-                unit_type="memory-candidate",
-                title=str(fm.get("title") or note["title"]),
-                content=str(fm.get("content", "")),
-                path=note["path"],
-                project=str(fm.get("project", "")),
-                date=fm.get("last_seen") or fm.get("date") or "",
-                source_note=f"note:{note['path']}",
-            )
-        )
-
-    if note["type"] == "personal-memory":
-        for entry in parse_personal_memory_entries(body):
+    if note["type"] in {"decisions", "pitfalls"}:
+        expected_project = aggregate_project_from_path(note["path"])
+        if (
+            not expected_project
+            or str(fm.get("project") or "").strip() != expected_project
+        ):
+            return []
+        key = "decisions" if note["type"] == "decisions" else "pitfalls"
+        memory_type = "decision" if key == "decisions" else "error"
+        for record in list_items(fm, key):
+            if not is_valid_active_project_record(
+                record,
+                memory_type,
+                expected_project,
+            ):
+                continue
+            raw = dict(record)
+            raw.update({"path": note["path"], "source_note": source_note})
             units.append(
-                make_recall_unit(
-                    unit_type="personal-memory",
-                    title=entry["title"],
-                    content=entry["content"],
-                    path=note["path"],
-                    project=entry.get("project", ""),
-                    date="",
-                    source_note=f"note:{note['path']}",
+                normalize_formal_record(
+                    raw,
+                    memory_type=memory_type,
+                    default_project=expected_project,
+                    source_ref=source_note,
+                    date=fm.get("date") or "",
                 )
             )
 
-    return dedupe_units(units)
+    if note["type"] == "personal-memory":
+        for entry in parse_personal_memory_entries(body):
+            raw = dict(entry)
+            raw.update({"path": note["path"], "source_note": source_note})
+            units.append(
+                normalize_formal_record(
+                    raw,
+                    memory_type=entry.get("type") or "preference",
+                    default_project=entry.get("project", ""),
+                    source_ref=source_note,
+                )
+            )
+
+    if note["type"] == "skill-routing-rules":
+        for entry in parse_skill_routing_entries(body):
+            raw = dict(entry)
+            raw.update({"path": note["path"], "source_note": source_note})
+            units.append(
+                normalize_formal_record(
+                    raw,
+                    memory_type="skill",
+                    default_project=entry.get("project", ""),
+                    source_ref=source_note,
+                )
+            )
+
+    if note["type"] == "workflow-rules":
+        for entry in parse_workflow_rule_entries(body):
+            raw = dict(entry)
+            raw.update({"path": note["path"], "source_note": source_note})
+            units.append(
+                normalize_formal_record(
+                    raw,
+                    memory_type="workflow",
+                    default_project=entry.get("project", ""),
+                    source_ref=source_note,
+                )
+            )
+
+    if note["type"] == "insights":
+        for entry in parse_insight_entries(body):
+            raw = dict(entry)
+            raw.update({"path": note["path"], "source_note": source_note})
+            units.append(
+                normalize_formal_record(
+                    raw,
+                    memory_type="insight",
+                    default_project=entry.get("project", ""),
+                    source_ref=source_note,
+                )
+            )
+
+    for unit in units:
+        unit["source_kind"] = note.get("type", "")
+    return units
+
+
+def inactive_recall_units_from_note(note):
+    """Return validated inactive formal facts used as exact recall tombstones."""
+    if not is_indexable_note(note) or note.get("type") == "session":
+        return []
+    fm = note.get("frontmatter") or {}
+    body = note.get("body") or ""
+    if note.get("type") in {
+        "decisions",
+        "pitfalls",
+        "personal-memory",
+        "skill-routing-rules",
+        "workflow-rules",
+        "insights",
+    } and fm.get("schema_version") != RUNTIME_SCHEMA_VERSION:
+        return []
+    source_note = f"note:{note['path']}"
+    units = []
+    if note["type"] in {"decisions", "pitfalls"}:
+        expected_project = aggregate_project_from_path(note["path"])
+        if (
+            not expected_project
+            or str(fm.get("project") or "").strip() != expected_project
+        ):
+            return []
+        key = "decisions" if note["type"] == "decisions" else "pitfalls"
+        memory_type = "decision" if key == "decisions" else "error"
+        for record in list_items(fm, key):
+            if record.get("status") == "active" or not is_valid_formal_project_record(
+                record,
+                memory_type,
+                expected_project,
+            ):
+                continue
+            raw = dict(record)
+            raw.update({"path": note["path"], "source_note": source_note})
+            units.append(
+                normalize_formal_record(
+                    raw,
+                    memory_type=memory_type,
+                    default_project=expected_project,
+                    source_ref=source_note,
+                    date=fm.get("date") or "",
+                )
+            )
+        return units
+
+    kind_by_type = {
+        "personal-memory": "personal",
+        "skill-routing-rules": "skill",
+        "workflow-rules": "workflow",
+        "insights": "insight",
+    }
+    kind = kind_by_type.get(note.get("type"))
+    if not kind:
+        return []
+    for entry in parse_adaptive_entries(body, kind, active_only=False):
+        if entry.get("status") == "active":
+            continue
+        raw = dict(entry)
+        raw.update({"path": note["path"], "source_note": source_note})
+        units.append(
+            normalize_formal_record(
+                raw,
+                memory_type=entry["type"],
+                default_project=entry.get("project", ""),
+                source_ref=source_note,
+            )
+        )
+    return units
+
+
+def enrich_runtime_unit(record):
+    unit = dict(record)
+    unit["title"] = str(unit.get("title") or unit.get("type") or "")
+    unit["summary"] = str(unit.get("summary") or "")
+    operational_text = " | ".join(
+        f"{field}: {str(unit.get(field) or '').strip()}"
+        for field in ("name", "when", "avoid", "trigger", "behavior")
+        if str(unit.get(field) or "").strip()
+    )
+    insight_text = " | ".join(
+        part
+        for part in (
+            f"novelty: {str(unit.get('novelty') or '').strip()}",
+            "transfer: " + ", ".join(unit.get("transfer") or []),
+            f"boundary: {str(unit.get('boundary') or '').strip()}",
+        )
+        if part.split(":", 1)[-1].strip()
+    ) if unit.get("type") == "insight" else ""
+    recall_text = " | ".join(
+        part for part in (unit["summary"], operational_text, insight_text) if part
+    )
+    unit["recall_summary"] = compact_text(recall_text, 600)
+    unit["path"] = str(unit.get("path") or "")
+    unit["source_note"] = str(unit.get("source_note") or "")
+    unit["terms"] = extract_terms(
+        " ".join(
+            [
+                unit["title"],
+                unit.get("project", ""),
+                unit["summary"],
+                operational_text,
+                insight_text,
+            ]
+        ),
+        limit=60,
+    )
+    return unit
 
 
 def make_recall_unit(unit_type, title, content, path, project, date, source_note):
@@ -357,6 +702,8 @@ def build_memory_graph(notes, recall_index):
     edges = []
 
     for note in notes:
+        if not is_indexable_note(note):
+            continue
         note_id = f"note:{note['path']}"
         add_node(nodes, note_id, note["type"], note["title"], note["path"], note.get("project", ""))
         if note.get("project"):
@@ -369,6 +716,8 @@ def build_memory_graph(notes, recall_index):
             add_edge(edges, note_id, target_id, "links_to")
 
     for unit in recall_index.get("units", []):
+        if is_error_evidence_candidate_path(unit.get("path")):
+            continue
         add_node(
             nodes,
             unit["id"],
@@ -384,14 +733,120 @@ def build_memory_graph(notes, recall_index):
             project_id = f"project:{unit['project']}"
             add_node(nodes, project_id, "project", unit["project"], "", unit["project"])
             add_edge(edges, unit["id"], project_id, "belongs_to")
+        for dependency in unit.get("requires") or []:
+            add_edge(edges, unit["id"], dependency, "depends_on")
+        if unit.get("type") == "insight":
+            add_insight_graph_relations(nodes, edges, unit)
+
+    units_by_id = {
+        unit.get("id"): unit
+        for unit in recall_index.get("units", [])
+        if isinstance(unit, dict) and unit.get("id")
+    }
+    for bundle in recall_index.get("experience_bundles") or []:
+        if not isinstance(bundle, dict) or not bundle.get("id"):
+            continue
+        project = str(bundle.get("project") or "")
+        session_ref = str(bundle.get("session_ref") or "")
+        add_node(
+            nodes,
+            bundle["id"],
+            "experience",
+            f"{project}: {session_ref.removeprefix('session:')}",
+            "",
+            project,
+        )
+        if project:
+            project_id = f"project:{project}"
+            add_node(nodes, project_id, "project", project, "", project)
+            add_edge(edges, bundle["id"], project_id, "belongs_to")
+        for member in bundle.get("members") or []:
+            if not isinstance(member, dict):
+                continue
+            unit = units_by_id.get(member.get("id"))
+            if (
+                unit
+                and unit.get("revision") == member.get("revision")
+                and unit.get("project") == project
+            ):
+                add_edge(edges, unit["id"], bundle["id"], "part_of_experience")
 
     return {
-        "schema_version": "1.0",
+        "schema_version": RUNTIME_SCHEMA_VERSION,
         "generated_by": "knowledge_index.py",
         "generated_at": datetime.now(CST).isoformat(),
         "nodes": list(nodes.values()),
         "edges": sorted(edges, key=lambda item: (item["source"], item["relation"], item["target"])),
     }
+
+
+def is_indexable_note(note):
+    if not isinstance(note, dict):
+        return False
+    return (
+        note.get("type") != "error-evidence-candidate"
+        and note.get("type") != "annotation-candidate"
+        and (note.get("frontmatter") or {}).get("type")
+        != "error-evidence-candidate"
+        and (note.get("frontmatter") or {}).get("type")
+        != "annotation-candidate"
+        and not is_error_evidence_candidate_path(note.get("path"))
+        and not is_annotation_candidate_path(note.get("path"))
+    )
+
+
+DEFAULT_ERROR_EVIDENCE_DIR = "04-Feedback/_error-candidates"
+DEFAULT_INSIGHT_CANDIDATE_DIR = "04-Feedback/_insight-candidates"
+DEFAULT_PROMOTION_PROPOSAL_DIR = "04-Feedback/_promotion-proposals"
+
+
+def error_evidence_candidate_roots(cfg):
+    vault = cfg.get("vault_path")
+    raw = (cfg.get("error_evidence") or {}).get(
+        "candidate_dir",
+        DEFAULT_ERROR_EVIDENCE_DIR,
+    )
+    candidate = safe_vault_path(vault, raw)
+    assert_no_symlink_components(candidate, vault)
+    relative = os.path.relpath(candidate, vault).replace(os.sep, "/")
+    return (relative, DEFAULT_ERROR_EVIDENCE_DIR)
+
+
+def is_error_evidence_candidate_path(path, candidate_roots=None):
+    canonical = posixpath.normpath(
+        "/" + str(path or "").replace("\\", "/").lstrip("/")
+    ).casefold()
+    for root in candidate_roots or (DEFAULT_ERROR_EVIDENCE_DIR,):
+        root_canonical = posixpath.normpath(
+            "/" + str(root or "").replace("\\", "/").lstrip("/")
+        ).casefold()
+        if canonical == root_canonical or canonical.startswith(root_canonical + "/"):
+            return True
+    return False
+
+
+def insight_candidate_roots(cfg):
+    vault = cfg.get("vault_path")
+    raw = (cfg.get("insight_memory") or {}).get(
+        "candidate_dir",
+        DEFAULT_INSIGHT_CANDIDATE_DIR,
+    )
+    candidate = safe_vault_path(vault, raw)
+    assert_no_symlink_components(candidate, vault)
+    relative = os.path.relpath(candidate, vault).replace(os.sep, "/")
+    return tuple(dict.fromkeys((relative, DEFAULT_INSIGHT_CANDIDATE_DIR)))
+
+
+def promotion_proposal_roots(cfg):
+    vault = cfg.get("vault_path")
+    raw = (cfg.get("memory_promotion") or {}).get(
+        "proposal_dir",
+        DEFAULT_PROMOTION_PROPOSAL_DIR,
+    )
+    proposal = safe_vault_path(vault, raw)
+    assert_no_symlink_components(proposal, vault)
+    relative = os.path.relpath(proposal, vault).replace(os.sep, "/")
+    return tuple(dict.fromkeys((relative, DEFAULT_PROMOTION_PROPOSAL_DIR)))
 
 
 def append_unique(items, value):
@@ -409,35 +864,86 @@ def list_items(fm, *keys):
 
 
 def parse_personal_memory_entries(body):
+    return parse_adaptive_entries(body, "personal")
+
+
+def skill_preference_title(note):
+    fm = note.get("frontmatter") or {}
+    skill_name = str(fm.get("skill_name") or "").strip()
+    task_intent = str(fm.get("task_intent") or note.get("title") or "").strip()
+    return f"{skill_name}: {task_intent}".strip(": ")
+
+
+def skill_preference_content(fm):
+    parts = [
+        "技能偏好候选",
+        f"skill_name: {fm.get('skill_name', '')}",
+        f"task_intent: {fm.get('task_intent', '')}",
+        f"artifact_type: {fm.get('artifact_type', '')}",
+        f"pain_point: {fm.get('pain_point', '')}",
+        f"why_skill_fits: {fm.get('why_skill_fits', '')}",
+        "positive_signals: " + ", ".join(str(item) for item in fm.get("positive_signals", []) or []),
+        "negative_signals: " + ", ".join(str(item) for item in fm.get("negative_signals", []) or []),
+        f"evidence_excerpt: {fm.get('evidence_excerpt', '')}",
+    ]
+    return "\n".join(part for part in parts if part.strip())
+
+
+def workflow_memory_title(note):
+    fm = note.get("frontmatter") or {}
+    rule_name = str(fm.get("rule_name") or "").strip()
+    title = str(fm.get("title") or note.get("title") or "").strip()
+    return f"{rule_name}: {title}".strip(": ")
+
+
+def workflow_memory_content(fm):
+    parts = [
+        "流程记忆候选",
+        f"rule_name: {fm.get('rule_name', '')}",
+        f"trigger_scene: {fm.get('trigger_scene', '')}",
+        f"user_correction: {fm.get('user_correction', '')}",
+        f"desired_behavior: {fm.get('desired_behavior', '')}",
+        f"why_it_matters: {fm.get('why_it_matters', '')}",
+        "positive_signals: " + ", ".join(str(item) for item in fm.get("positive_signals", []) or []),
+        "negative_signals: " + ", ".join(str(item) for item in fm.get("negative_signals", []) or []),
+        f"evidence_excerpt: {fm.get('evidence_excerpt', '')}",
+    ]
+    return "\n".join(part for part in parts if part.strip())
+
+
+def parse_skill_routing_entries(body):
+    return parse_adaptive_entries(body, "skill")
+
+
+def parse_workflow_rule_entries(body):
+    return parse_adaptive_entries(body, "workflow")
+
+
+def parse_insight_entries(body):
+    return parse_adaptive_entries(body, "insight")
+
+
+def parse_adaptive_entries(body, kind, active_only=True):
     entries = []
-    current_title = ""
-    current_lines = []
-    for line in str(body or "").splitlines():
-        if line.startswith("## "):
-            if current_title and current_lines:
-                entries.append(memory_entry_from_lines(current_title, current_lines))
-            current_title = line[3:].strip()
-            current_lines = []
-        elif current_title:
-            current_lines.append(line)
-    if current_title and current_lines:
-        entries.append(memory_entry_from_lines(current_title, current_lines))
-    return [entry for entry in entries if entry.get("content")]
+    headings = list(re.finditer(r"^##\s+(.+?)\s*$", str(body or ""), re.MULTILINE))
+    for index, match in enumerate(headings):
+        title = match.group(1).strip()
+        start = match.end()
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
+        section = body[start:end].strip()
+        parser = parse_active_formal_section if active_only else parse_formal_section
+        record = parser(title, section, kind)
+        if record is not None:
+            entries.append(record)
+    return entries
 
 
-def memory_entry_from_lines(title, lines):
-    content = ""
-    project = ""
-    for line in lines:
-        if line.strip().startswith("- memory:"):
-            content = line.split(":", 1)[1].strip()
-        elif line.strip().startswith("- project:"):
-            raw = line.split(":", 1)[1].strip()
-            match = re.search(r"\[\[01-Projects/([^/\]]+)/", raw)
-            project = match.group(1) if match else raw.strip("` ")
-    if looks_like_markdown_table_memory(content):
-        content = ""
-    return {"title": title, "content": content, "project": project}
+def aggregate_project_from_path(path):
+    match = re.fullmatch(
+        r"01-Projects/([^/]+)/Memory/(?:decisions|pitfalls)",
+        str(path or "").replace("\\", "/"),
+    )
+    return canonical_project(match.group(1)) if match else ""
 
 
 def looks_like_markdown_table_memory(content):
@@ -457,7 +963,8 @@ def dedupe_units(units):
 
 def recall_unit_id(unit_type, path, title, content):
     digest = hashlib.sha1(
-        f"{unit_type}:{path}:{title}:{content}".encode("utf-8")
+        f"{unit_type}:{path}:{title}:{content}".encode("utf-8"),
+        usedforsecurity=False,
     ).hexdigest()[:12]
     return f"{unit_type}:{digest}"
 
@@ -470,22 +977,57 @@ def compact_text(text, limit):
 
 
 def add_node(nodes, node_id, node_type, label, path, project):
-    nodes.setdefault(
-        node_id,
-        {
-            "id": node_id,
-            "type": node_type,
-            "label": str(label or node_id)[:160],
-            "path": path or "",
-            "project": project or "",
-        },
-    )
+    existing = nodes.get(node_id)
+    if existing and not (
+        existing.get("type") == "note-ref" and node_type != "note-ref"
+    ):
+        return
+    nodes[node_id] = {
+        "id": node_id,
+        "type": node_type,
+        "label": str(label or node_id)[:160],
+        "path": path or "",
+        "project": project or "",
+    }
 
 
 def add_edge(edges, source, target, relation):
     edge = {"source": source, "target": target, "relation": relation}
     if edge not in edges:
         edges.append(edge)
+
+
+def add_insight_graph_relations(nodes, edges, unit):
+    source_refs = [
+        source_ref
+        for source_ref in dict.fromkeys(unit.get("source_refs") or [])
+        if source_ref != unit.get("source_note")
+    ]
+    for index, source_ref in enumerate(source_refs):
+        add_node(nodes, source_ref, "source-ref", source_ref, "", "")
+        relation = "derived_from" if index == 0 else "reinforced_by"
+        add_edge(edges, unit["id"], source_ref, relation)
+
+    for transfer in unit.get("transfer") or []:
+        target = concept_node_id(transfer)
+        add_node(nodes, target, "concept", transfer, "", unit.get("project", ""))
+        add_edge(edges, unit["id"], target, "applies_to")
+
+    relation_types = {
+        "supports": "memory-ref",
+        "operationalized_as": "memory-ref",
+        "related_to": "insight-ref",
+    }
+    for relation, node_type in relation_types.items():
+        for target in unit.get(relation) or []:
+            add_node(nodes, target, node_type, target, "", "")
+            add_edge(edges, unit["id"], target, relation)
+
+
+def concept_node_id(value):
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"concept:{digest}"
 
 
 def extract_wikilinks(body):
@@ -505,7 +1047,7 @@ def build_global_atoms(vault):
             pitfalls_path = os.path.join(projects_dir, project, "Memory", "pitfalls.md")
             if not os.path.exists(pitfalls_path):
                 continue
-            for pitfall in read_pitfalls(pitfalls_path):
+            for pitfall in read_pitfalls(pitfalls_path, project):
                 err_type = str(pitfall.get("type", "")).strip()
                 resolution = str(pitfall.get("resolution", "")).strip()
                 if not err_type or not resolution:
@@ -552,15 +1094,26 @@ def build_global_atoms(vault):
     }
 
 
-def read_pitfalls(path):
+def read_pitfalls(path, expected_project):
     try:
         with open(path, "r", encoding="utf-8") as handle:
             content = handle.read()
     except OSError:
         return []
     fm, _ = split_frontmatter(content)
+    if (
+        fm.get("schema_version") != RUNTIME_SCHEMA_VERSION
+        or str(fm.get("project") or "").strip() != expected_project
+    ):
+        return []
     pitfalls = fm.get("pitfalls", [])
-    return pitfalls if isinstance(pitfalls, list) else []
+    if not isinstance(pitfalls, list):
+        return []
+    return [
+        item
+        for item in pitfalls
+        if is_valid_active_project_record(item, "error", expected_project)
+    ]
 
 
 def render_global_atoms_markdown(data):
@@ -698,25 +1251,42 @@ def render_recall_context_markdown(recall_index, memory_graph):
 
 
 def split_frontmatter(content):
-    if not content.startswith("---"):
-        return {}, content
-    parts = content.split("---", 2)
-    if len(parts) < 3:
+    frontmatter_text, body = split_frontmatter_text(content)
+    if frontmatter_text is None:
         return {}, content
     try:
-        fm = yaml.safe_load(parts[1]) or {}
+        fm = yaml.safe_load(frontmatter_text) or {}
     except yaml.YAMLError:
         fm = {}
     if not isinstance(fm, dict):
         fm = {}
-    return fm, parts[2]
+    return fm, body
 
 
 def searchable_text(fm, body):
     values = []
-    for key in ("content", "evidence", "summary", "project"):
+    for key in (
+        "content",
+        "evidence",
+        "summary",
+        "project",
+        "skill_name",
+        "task_intent",
+        "artifact_type",
+        "pain_point",
+        "why_skill_fits",
+        "rule_name",
+        "trigger_scene",
+        "user_correction",
+        "desired_behavior",
+        "why_it_matters",
+        "evidence_excerpt",
+    ):
         if fm.get(key):
             values.append(str(fm[key]))
+    for key in ("positive_signals", "negative_signals"):
+        if isinstance(fm.get(key), list):
+            values.extend(str(item) for item in fm[key])
     for key in ("decisions_made", "errors_encountered", "decisions", "pitfalls"):
         if isinstance(fm.get(key), list):
             values.extend(flatten_item(item) for item in fm[key])
@@ -777,18 +1347,35 @@ def note_type_from_path(rel_path):
         return "pitfalls"
     if "_memory-candidates" in rel_path:
         return "memory-candidate"
+    if "_skill-preferences" in rel_path:
+        return "skill-preference"
+    if "_workflow-candidates" in rel_path:
+        return "workflow-candidate"
+    if "_insight-candidates" in rel_path:
+        return "insight-candidate"
+    if "_annotation-candidates" in rel_path:
+        return "annotation-candidate"
     if rel_path.endswith("personal-memory"):
         return "personal-memory"
+    if rel_path.endswith("skill-routing-rules"):
+        return "skill-routing-rules"
+    if rel_path.endswith("workflow-rules"):
+        return "workflow-rules"
+    if rel_path.endswith("insights"):
+        return "insights"
     return "note"
 
 
 def type_rank(unit_type):
     return {
+        "skill": 8,
+        "workflow": 8,
+        "insight": 7,
         "decision": 6,
         "error": 5,
-        "personal-memory": 4,
-        "memory-candidate": 3,
-        "session": 2,
+        "preference": 4,
+        "project_rule": 4,
+        "environment": 4,
     }.get(unit_type, 1)
 
 
@@ -813,16 +1400,13 @@ def escape_table(value):
     return str(value).replace("|", "\\|")
 
 
-def atomic_write_json(path, data):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
-    os.replace(tmp, path)
+def atomic_write_json(path, data, root=None):
+    durable_atomic_write(
+        path,
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        root=root,
+    )
 
 
-def atomic_write_text(path, content):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(content)
-    os.replace(tmp, path)
+def atomic_write_text(path, content, root=None):
+    durable_atomic_write(path, content, root=root)
