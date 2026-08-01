@@ -1613,6 +1613,7 @@ class BeaconSyncDoctorTests(unittest.TestCase):
                 encoding="utf-8",
             )
             output = io.StringIO()
+            runner = RecordingRunner()
 
             with contextlib.redirect_stdout(output):
                 code = main(
@@ -1625,7 +1626,7 @@ class BeaconSyncDoctorTests(unittest.TestCase):
                         REPO_ROOT,
                         "--json",
                     ],
-                    runner=RecordingRunner(),
+                    runner=runner,
                 )
 
             payload = json.loads(output.getvalue())
@@ -1640,6 +1641,23 @@ class BeaconSyncDoctorTests(unittest.TestCase):
                     "module-imports",
                 ),
             )
+            import_probe = next(
+                call["args"][3]
+                for call in runner.calls
+                if len(call["args"]) > 3
+                and call["args"][2] == "-c"
+                and "sys.path.insert" in call["args"][3]
+            )
+            for module in (
+                "beacon_sync_protocol",
+                "beacon_sync_producer",
+                "beacon_sync_snapshot",
+                "beacon_sync",
+                "install_beacon_sync",
+                "install_runtime",
+            ):
+                self.assertIn(module, import_probe)
+            self.assertNotIn("session_harvester", import_probe)
 
     def test_live_cli_preserves_sync_runtime_release_bindings(self):
         with tempfile.TemporaryDirectory() as temp:

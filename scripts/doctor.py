@@ -108,6 +108,14 @@ IMPORT_PROBE_CODE = (
     "beacon_sync_protocol,beacon_sync_producer,beacon_sync_reducer,"
     "beacon_sync_snapshot,beacon_sync,install_beacon_sync"
 )
+PRODUCER_REPLICA_IMPORT_PROBE_CODE = (
+    "import sys;sys.dont_write_bytecode=True;"
+    "sys.path.insert(0,sys.argv[1]);"
+    "import config,memory_schema,memory_recall,memory_graph,safety,"
+    "transcript_utils,beacon_sync_protocol,beacon_sync_producer,"
+    "beacon_sync_reducer,beacon_sync_snapshot,beacon_sync,"
+    "install_beacon_sync,install_runtime"
+)
 
 
 @dataclass(frozen=True)
@@ -194,7 +202,11 @@ def run_profile(profile, *, repo_root, cfg=None, runner=None):
                     sys.executable,
                     "-B",
                     "-c",
-                    IMPORT_PROBE_CODE,
+                    (
+                        PRODUCER_REPLICA_IMPORT_PROBE_CODE
+                        if producer_replica_profile
+                        else IMPORT_PROBE_CODE
+                    ),
                     os.path.join(repo_root, "scripts"),
                 ),
                 repo_root,
