@@ -1106,7 +1106,7 @@ def _hook_matches_expected(path, expected_data, expected_mode):
         return False
     _require_regular(path, "hook configuration")
     info = os.lstat(path)
-    if stat.S_IMODE(info.st_mode) != expected_mode:
+    if not _hook_mode_matches(info.st_mode, expected_mode):
         return False
     if info.st_size != len(expected_data):
         return False
@@ -1114,6 +1114,14 @@ def _hook_matches_expected(path, expected_data, expected_mode):
         return path.read_bytes() == expected_data
     except OSError as exc:
         raise InstallerError(f"hook configuration cannot be read: {path}") from exc
+
+
+def _hook_mode_matches(actual_mode, expected_mode):
+    if os.name == "nt":
+        return bool(actual_mode & stat.S_IWUSR) == bool(
+            expected_mode & stat.S_IWUSR
+        )
+    return stat.S_IMODE(actual_mode) == expected_mode
 
 
 def _durable_unlink(path):

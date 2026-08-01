@@ -122,6 +122,9 @@ MAX_STALE_STAGING_GENERATIONS = 4096
 MAX_STALE_ROLLBACK_GENERATIONS = 4096
 MAX_GENERATIONS_PER_MATERIALIZE_RUN = 32
 MAX_RECEIPT_REFERENCES_PER_PUBLISH_RUN = 1024
+SIGNED_IDENTITY_MAX = (1 << 63) - 1
+UNSIGNED_IDENTITY_MAX = (1 << 128) - 1
+UNSIGNED_IDENTITY_RE = re.compile(r"^u128:[0-9a-f]{32}$")
 RECEIPT_REFERENCE_SCAN_PROTOCOL = (
     "agent-memory-beacon-sync-receipt-reference-scan"
 )
@@ -1934,7 +1937,8 @@ def _apply_journal_size_upper_bound(previous, snapshot):
         "operations": [],
     }
     total = len(canonical_json_bytes(journal))
-    identity_component_size_sentinel = -(1 << 63)
+    numeric_identity_size_sentinel = -(1 << 63)
+    file_identity_size_sentinel = "u128:" + ("f" * 32)
     operation_count = 0
     for relative in touched:
         previous_item = previous_by_path.get(relative)
@@ -1964,8 +1968,13 @@ def _apply_journal_size_upper_bound(previous, snapshot):
             operation.update(
                 {
                     "before_identity": [
-                        identity_component_size_sentinel
-                    ] * 6,
+                        file_identity_size_sentinel,
+                        file_identity_size_sentinel,
+                        numeric_identity_size_sentinel,
+                        numeric_identity_size_sentinel,
+                        numeric_identity_size_sentinel,
+                        numeric_identity_size_sentinel,
+                    ],
                     "existed": True,
                     "backup": (
                         f"rollback/{snapshot['generation_id']}/{relative}"
@@ -2187,13 +2196,43 @@ def _assert_apply_precondition(replica, operation, max_object_bytes):
 
 def _stat_identity(info):
     return [
-        int(info.st_dev),
-        int(info.st_ino),
+        _portable_file_identity_component(info.st_dev),
+        _portable_file_identity_component(info.st_ino),
         int(info.st_mode),
         int(info.st_size),
         int(info.st_mtime_ns),
         int(info.st_ctime_ns),
     ]
+
+
+def _portable_file_identity_component(value):
+    value = int(value)
+    if 0 <= value <= SIGNED_IDENTITY_MAX:
+        return value
+    if 0 <= value <= UNSIGNED_IDENTITY_MAX:
+        return f"u128:{value:032x}"
+    raise MaterializeError("file identity is outside the supported range")
+
+
+def _valid_journal_identity(value):
+    if not isinstance(value, list) or len(value) != 6:
+        return False
+    for component in value[:2]:
+        if (
+            isinstance(component, int)
+            and not isinstance(component, bool)
+            and 0 <= component <= SIGNED_IDENTITY_MAX
+        ):
+            continue
+        if isinstance(component, str) and UNSIGNED_IDENTITY_RE.fullmatch(component):
+            continue
+        return False
+    return all(
+        isinstance(component, int)
+        and not isinstance(component, bool)
+        and 0 <= component <= SIGNED_IDENTITY_MAX
+        for component in value[2:]
+    )
 
 
 def _expected_previous_directory(replica, relative, previous_by_path):
@@ -2771,10 +2810,9 @@ def _prepare_rollback_operations(replica_state, journal):
             or isinstance(target_bytes, bool)
             or not isinstance(target_bytes, int)
             or target_bytes < 0
-            or not isinstance(before_identity, list)
-            or any(
-                isinstance(value, bool) or not isinstance(value, int) or value < 0
-                for value in before_identity
+            or (
+                before_identity != []
+                and not _valid_journal_identity(before_identity)
             )
         ):
             raise MaterializeError("rollback journal metadata is invalid")
@@ -2787,7 +2825,7 @@ def _prepare_rollback_operations(replica_state, journal):
         else:
             raise MaterializeError("rollback action is invalid")
         if operation["existed"] is True:
-            if len(before_identity) != 6:
+            if not _valid_journal_identity(before_identity):
                 raise MaterializeError("rollback before identity is invalid")
             backup_text = validate_replica_path(operation["backup"])
             if not backup_text.startswith("rollback/"):

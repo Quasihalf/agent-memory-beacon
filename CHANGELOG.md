@@ -10,6 +10,8 @@ All notable changes to Agent Memory Beacon are documented here.
 - Reserve final render budget for a matched `[CONTEXT]` after higher-authority formal memory so a crowded Decision/Error result set cannot silently discard the latest conversation summary.
 - Create a fresh authority ledger on Python 3.11 without serializing an uninitialized in-memory SQLite database.
 - Complete the Windows synchronization path with native handle-relative atomic rename, path-bound recursive cleanup identities, and lazy loading of macOS-only launchd dependencies.
+- Accept CPython's native Windows `pyvenv.cfg` command form, preserve and compare full 128-bit Windows file IDs in replica recovery and deletion, restore newly created hooks with Windows read-only semantics, and clean failed runtime releases through the portable Windows tree remover.
+- Limit Windows release preflight and CI to producer, replica, portable protocol, installer, and native Task responsibilities while retaining the full Mac authority suite on macOS.
 
 ## [0.7.0] - 2026-07-31
 

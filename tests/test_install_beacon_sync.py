@@ -2,6 +2,7 @@ import json
 import os
 import pathlib
 import plistlib
+import stat
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ import install_beacon_sync
 
 
 TASK_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+HOST_PATH_CLASS = pathlib.WindowsPath if os.name == "nt" else pathlib.PosixPath
 
 
 class InstallBeaconSyncTests(unittest.TestCase):
@@ -110,7 +112,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
             mock.patch.object(
                 install_beacon_sync,
                 "Path",
-                pathlib.PosixPath,
+                HOST_PATH_CLASS,
             ),
             mock.patch.object(
                 install_beacon_sync,
@@ -157,7 +159,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
             mock.patch.object(
                 install_beacon_sync,
                 "Path",
-                pathlib.PosixPath,
+                HOST_PATH_CLASS,
             ),
             mock.patch.object(
                 install_beacon_sync,
@@ -212,7 +214,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
             mock.patch.object(
                 install_beacon_sync,
                 "Path",
-                pathlib.PosixPath,
+                HOST_PATH_CLASS,
             ),
             mock.patch.object(
                 install_beacon_sync,
@@ -898,6 +900,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
         for event in install_beacon_sync.HOOK_EVENTS:
             self.assertEqual(merged["hooks"][event], [{"hooks": [foreign]}])
 
+    @unittest.skipIf(os.name == "nt", "macOS scheduler test")
     def test_macos_scheduler_dry_run_and_uninstall_do_not_touch_unrelated_files(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
@@ -952,6 +955,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
                 ],
             )
 
+    @unittest.skipIf(os.name == "nt", "macOS scheduler test")
     def test_macos_scheduler_refuses_foreign_same_name_plist(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
@@ -994,6 +998,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
                         )
                     self.assertEqual(path.read_bytes(), before)
 
+    @unittest.skipIf(os.name == "nt", "macOS scheduler test")
     def test_macos_identical_plist_bootstraps_unloaded_service_and_verifies(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
@@ -1046,6 +1051,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
                 ["print", "bootstrap", "print"],
             )
 
+    @unittest.skipIf(os.name == "nt", "macOS scheduler test")
     def test_macos_dry_run_reports_identical_but_unloaded_service(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
@@ -1091,6 +1097,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
             self.assertTrue(result["changed"])
             self.assertEqual([arguments[1] for arguments in calls], ["print"])
 
+    @unittest.skipIf(os.name == "nt", "macOS scheduler test")
     def test_macos_identical_plist_verification_failure_restores_unloaded_state(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
@@ -1147,6 +1154,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
                 1,
             )
 
+    @unittest.skipIf(os.name == "nt", "macOS scheduler test")
     def test_macos_uninstall_boots_out_orphan_service_by_label(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
@@ -1728,6 +1736,27 @@ class InstallBeaconSyncTests(unittest.TestCase):
             self.assertEqual(codex.read_bytes(), original_codex)
             self.assertFalse(claude.exists())
 
+    def test_windows_hook_mode_comparison_uses_readonly_semantics(self):
+        with mock.patch.object(install_beacon_sync.os, "name", "nt"):
+            self.assertTrue(
+                install_beacon_sync._hook_mode_matches(
+                    stat.S_IFREG | 0o666,
+                    0o600,
+                )
+            )
+            self.assertTrue(
+                install_beacon_sync._hook_mode_matches(
+                    stat.S_IFREG | 0o444,
+                    0o400,
+                )
+            )
+            self.assertFalse(
+                install_beacon_sync._hook_mode_matches(
+                    stat.S_IFREG | 0o444,
+                    0o600,
+                )
+            )
+
     def test_windows_transaction_preserves_original_hook_mode_on_rollback(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1978,6 +2007,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
             self.assertEqual(codex.read_bytes(), original_codex)
             self.assertEqual(claude.read_bytes(), original_claude)
 
+    @unittest.skipIf(os.name == "nt", "macOS scheduler test")
     def test_macos_bootstrap_failure_restores_previous_plist_and_service(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)

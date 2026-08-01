@@ -1713,8 +1713,12 @@ class BeaconSyncReducerTests(unittest.TestCase):
         path = self.authority_state / "ledger.sqlite3"
         self._create_v1_ledger(path)
         producer = "12345678-1234-4234-9234-123456789abc"
-        legacy_mirror = (
-            f"/legacy/state/mirrors/{producer}/stream-test/session-remote.jsonl"
+        legacy_mirror = str(
+            self.authority_state
+            / "mirrors"
+            / producer
+            / "stream-test"
+            / "session-remote.jsonl"
         )
         connection = sqlite3.connect(path)
         connection.execute(

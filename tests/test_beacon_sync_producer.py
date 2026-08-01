@@ -1601,6 +1601,7 @@ class BeaconSyncProducerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ProducerError, "schema"):
                     load_producer_state(self.config)
 
+    @unittest.skipIf(os.name == "nt", "Mac authority snapshot fixture")
     def test_gc_requires_matching_receipt_hash_and_gc_permission(self):
         self._write_codex_transcript("gc.jsonl", ["gc"])
         collect_transcripts(self.config, include_existing=True, now=NOW)
@@ -1684,6 +1685,7 @@ class BeaconSyncProducerTests(unittest.TestCase):
         self.assertEqual(denied["denied"], 1)
         self.assertTrue(bundle.is_dir())
 
+    @unittest.skipIf(os.name == "nt", "Mac authority snapshot fixture")
     def test_gc_denies_sealed_receipt_until_replica_is_materialized(self):
         self._write_codex_transcript("not-materialized.jsonl", ["keep until replica"])
         collect_transcripts(self.config, include_existing=True, now=NOW)

@@ -8,6 +8,7 @@ import unittest
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -56,6 +57,55 @@ class BeaconSyncSnapshotTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_apply_journal_encodes_large_windows_file_identity(self):
+        previous_bytes = b"old\n"
+        previous = {
+            "note.md": {
+                "path": "note.md",
+                "bytes": len(previous_bytes),
+                "sha256": sha256_bytes(previous_bytes),
+            }
+        }
+        target = {
+            "note.md": {
+                "path": "note.md",
+                "bytes": 4,
+                "sha256": sha256_bytes(b"new\n"),
+            }
+        }
+        large_file_id = (1 << 127) + 17
+        file_info = SimpleNamespace(
+            st_dev=7,
+            st_ino=large_file_id,
+            st_mode=stat.S_IFREG | 0o444,
+            st_size=len(previous_bytes),
+            st_mtime_ns=1_700_000_000_000_000_000,
+            st_ctime_ns=1_700_000_000_000_000_001,
+        )
+
+        with patch.object(
+            beacon_sync_snapshot,
+            "_read_expected_replica_file",
+            return_value=(file_info, previous_bytes),
+        ):
+            operations = beacon_sync_snapshot._build_apply_operations(
+                self.replica,
+                self.replica_state,
+                previous,
+                target,
+                ["note.md"],
+                self.replica_state / "rollback" / ("generation-" + "a" * 64),
+                1024,
+            )
+
+        encoded = canonical_json_bytes({"operations": operations})
+        self.assertIn(f'"u128:{large_file_id:032x}"'.encode("ascii"), encoded)
+        prepared = beacon_sync_snapshot._prepare_rollback_operations(
+            self.replica_state,
+            {"operations": operations},
+        )
+        self.assertEqual(len(prepared), 1)
 
     def test_publisher_excludes_volatile_and_credentials_and_marks_skill_source(self):
         self._write("01-Projects/demo/Memory/decisions.md", "decision\n")

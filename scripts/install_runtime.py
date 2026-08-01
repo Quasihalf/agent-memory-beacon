@@ -131,13 +131,9 @@ _ISOLATED_MODULE_CODE = (
 WINDOWS_SYNC_TEST_MODULES = (
     "tests.test_beacon_sync_protocol",
     "tests.test_beacon_sync_producer",
-    "tests.test_beacon_sync_reducer",
-    "tests.test_beacon_sync_snapshot",
     "tests.test_beacon_sync_cli",
-    "tests.test_beacon_sync_end_to_end",
-    "tests.test_beacon_sync_windows",
-    "tests.test_config",
     "tests.test_install_beacon_sync",
+    "tests.test_beacon_sync_windows",
 )
 RUNTIME_ROOT_FILES = ("LICENSE",)
 RUNTIME_SCRIPT_FILES = (
@@ -741,6 +737,7 @@ def _windows_pyvenv_config_identity(runtime_root):
     expected_prefixes = (
         "--copies --without-pip ",
         "--without-pip --copies ",
+        "--without-pip ",
     )
     prefix = next(
         (item for item in expected_prefixes if command_arguments.startswith(item)),
@@ -3307,6 +3304,35 @@ def _windows_move_file_write_through(source, destination):
 
 def _remove_tree(path, *, expected_parent_identity):
     if not os.path.lexists(path):
+        return
+    if sys.platform == "win32":
+        from beacon_sync_protocol import portable_rmtree
+
+        path = Path(path)
+        parent = path.parent
+        if (
+            not isinstance(expected_parent_identity, (list, tuple))
+            or len(expected_parent_identity) != 2
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in expected_parent_identity
+            )
+        ):
+            raise ValueError("rmtree expected parent identity is invalid")
+        parent_info = os.lstat(parent)
+        if (
+            stat.S_ISLNK(parent_info.st_mode)
+            or not stat.S_ISDIR(parent_info.st_mode)
+            or getattr(parent_info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            or (parent_info.st_dev, parent_info.st_ino)
+            != tuple(expected_parent_identity)
+        ):
+            raise OSError("rmtree parent was replaced")
+        portable_rmtree(path, root=parent)
+        after = os.lstat(parent)
+        if (after.st_dev, after.st_ino) != tuple(expected_parent_identity):
+            raise OSError("rmtree parent was replaced")
         return
     durable_rmtree(path, expected_parent_identity=expected_parent_identity)
 

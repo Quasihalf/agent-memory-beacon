@@ -273,7 +273,7 @@ def test_config(root, vault):
         "vault_path": str(vault),
         "codex_home": str(codex_home),
         "codex_sessions_path": str(codex_home / "sessions"),
-        "python_path": "/usr/bin/python3",
+        "python_path": sys.executable,
         "harvest_interval_seconds": 300,
         "memory_runtime": {"hook_timeout_ms": 2000},
         "scan": {"day": "SUN", "hour": 15, "minute": 0},
@@ -353,6 +353,7 @@ def write_windows_venv_fixture(
     caller_python=None,
     command_python=None,
     include_copies=True,
+    include_without_pip=True,
 ):
     runtime_root = Path(runtime_root)
     base_python_root = Path(base_python_root)
@@ -384,7 +385,8 @@ def write_windows_venv_fixture(
             (
                 f"command = {command_python} -m venv "
                 f"{'--copies ' if include_copies else ''}"
-                f"--without-pip {runtime_root / '.venv'}"
+                f"{'--without-pip ' if include_without_pip else ''}"
+                f"{runtime_root / '.venv'}"
             ),
         )
     )
@@ -962,6 +964,34 @@ class RuntimeInstallerTests(unittest.TestCase):
         self.assertIn("AGENT_MEMORY_BEACON_VERIFY_RELEASE", windows_job)
         self.assertIn("Verify Windows Task transaction", windows_job)
 
+    def test_windows_ci_uses_only_producer_replica_and_installer_targets(self):
+        expected = (
+            "tests.test_beacon_sync_protocol",
+            "tests.test_beacon_sync_producer",
+            "tests.test_beacon_sync_cli",
+            "tests.test_install_beacon_sync",
+            "tests.test_beacon_sync_windows",
+        )
+        self.assertEqual(install_runtime.WINDOWS_SYNC_TEST_MODULES, expected)
+
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        matrix_step = workflow.split(
+            "- name: Run Windows synchronization test matrix",
+            1,
+        )[1].split("- name: Verify movable Windows runtime release", 1)[0]
+        for target in expected:
+            self.assertIn(target, matrix_step)
+        for authority_target in (
+            "tests.test_beacon_sync_reducer",
+            "tests.test_beacon_sync_snapshot",
+            "tests.test_beacon_sync_end_to_end",
+            "tests.test_config",
+            "tests.test_install_runtime",
+        ):
+            self.assertNotIn(authority_target, matrix_step)
+
     def test_generated_config_uses_stable_python_and_redacts_inline_secrets(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as vault:
             plan = create_plan(Path(tmp), Path(vault))
@@ -1244,7 +1274,7 @@ class RuntimeInstallerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "size limit"):
                     install_runtime._windows_runtime_environment_identity(runtime)
 
-    def test_pyvenv_identity_ignores_caller_path_but_requires_expected_flags(self):
+    def test_pyvenv_identity_accepts_default_windows_copies_and_requires_no_pip(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             base_python = seed_windows_base_python(root / "base-python")
@@ -1269,18 +1299,54 @@ class RuntimeInstallerTests(unittest.TestCase):
             )
             write_windows_venv_fixture(second, base_python, caller_python=callers[1])
 
+            default_copies = root / "stage-default-copies"
+            write_windows_venv_fixture(
+                default_copies,
+                base_python,
+                include_copies=False,
+            )
+
             first_identity = install_runtime._windows_runtime_environment_identity(first)
             second_identity = install_runtime._windows_runtime_environment_identity(second)
+            default_copies_identity = (
+                install_runtime._windows_runtime_environment_identity(default_copies)
+            )
 
             self.assertEqual(first_identity, second_identity)
+            self.assertEqual(first_identity, default_copies_identity)
             invalid = root / "invalid-stage"
             write_windows_venv_fixture(
                 invalid,
                 base_python,
-                include_copies=False,
+                include_without_pip=False,
             )
             with self.assertRaisesRegex(ValueError, "probe-equivalent"):
                 install_runtime._windows_runtime_environment_identity(invalid)
+
+    def test_windows_remove_tree_uses_portable_recursive_delete(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            parent = root / "runtime"
+            target = parent / "failed-release"
+            target.mkdir(parents=True)
+            (target / "managed.txt").write_bytes(b"managed")
+            parent_info = parent.stat()
+            expected_parent = (parent_info.st_dev, parent_info.st_ino)
+
+            with (
+                patch.object(install_runtime.sys, "platform", "win32"),
+                patch(
+                    "beacon_sync_protocol.portable_rmtree",
+                    return_value=True,
+                ) as portable_rmtree,
+            ):
+                _remove_tree(
+                    target,
+                    expected_parent_identity=expected_parent,
+                )
+
+            portable_rmtree.assert_called_once_with(target, root=parent)
+            self.assertTrue(target.exists())
 
     def test_windows_release_id_is_finalized_from_installed_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as vault:
@@ -2042,13 +2108,13 @@ class RuntimeInstallerTests(unittest.TestCase):
             target = root / "runtime"
             target.symlink_to(real, target_is_directory=True)
 
-            with self.assertRaisesRegex(ValueError, "symlink"):
+            with self.assertRaisesRegex(ValueError, "symlink|reparse point"):
                 build_release_plan(REPO_ROOT, target, test_config(root, Path(vault)))
 
             target.unlink()
             parent = root / "alias"
             parent.symlink_to(real, target_is_directory=True)
-            with self.assertRaisesRegex(ValueError, "symlink"):
+            with self.assertRaisesRegex(ValueError, "symlink|reparse point"):
                 build_release_plan(
                     REPO_ROOT,
                     parent / "runtime",

@@ -1481,6 +1481,15 @@ def _windows_delete_by_handle(
             ("FileAttributes", wintypes.DWORD),
         )
 
+    class FILE_ID_128(ctypes.Structure):
+        _fields_ = (("Identifier", ctypes.c_ubyte * 16),)
+
+    class FILE_ID_INFO(ctypes.Structure):
+        _fields_ = (
+            ("VolumeSerialNumber", ctypes.c_ulonglong),
+            ("FileId", FILE_ID_128),
+        )
+
     class FILE_DISPOSITION_INFO(ctypes.Structure):
         _fields_ = (("DeleteFile", ctypes.c_ubyte),)
 
@@ -1499,6 +1508,7 @@ def _windows_delete_by_handle(
     file_attribute_readonly = 0x00000001
     file_attribute_reparse = 0x00000400
     file_basic_info = 0
+    file_id_info = 18
     file_disposition_info = 4
     file_disposition_info_ex = 21
     disposition_delete = 0x00000001
@@ -1588,14 +1598,35 @@ def _windows_delete_by_handle(
             ctypes,
             wintypes,
         )
-        file_index = (
+        legacy_file_index = (
             int(information.nFileIndexHigh) << 32
         ) | int(information.nFileIndexLow)
+        volume_serial = int(information.dwVolumeSerialNumber)
+        identity = FILE_ID_INFO()
+        if get_information_ex(
+            handle,
+            file_id_info,
+            ctypes.byref(identity),
+            ctypes.sizeof(identity),
+        ):
+            file_index = int.from_bytes(
+                bytes(identity.FileId.Identifier),
+                "little",
+            )
+            if file_index:
+                volume_serial = int(identity.VolumeSerialNumber)
+            else:
+                file_index = legacy_file_index
+        else:
+            file_index = legacy_file_index
         file_size = (
             int(information.nFileSizeHigh) << 32
         ) | int(information.nFileSizeLow)
         if expected_identity is not None:
-            if int(expected_identity[1]) != file_index:
+            if (
+                int(expected_identity[0]) != volume_serial
+                or int(expected_identity[1]) != file_index
+            ):
                 raise ProtocolError("delete destination changed")
             if (
                 not expect_directory

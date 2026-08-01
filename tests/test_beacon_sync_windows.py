@@ -384,9 +384,11 @@ class BeaconSyncWindowsTests(unittest.TestCase):
                 root=root,
             )
             self.assertTrue(portable_rmtree(tree, root=root))
+            self.assertFalse(tree.exists())
             self.assertTrue(
                 portable_unlink_regular(target, root=root)
             )
+            self.assertFalse(target.exists())
 
     def test_bounded_reader_rejects_reparse_point_when_available(self):
         with tempfile.TemporaryDirectory() as temp:
