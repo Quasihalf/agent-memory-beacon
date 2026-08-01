@@ -1109,9 +1109,15 @@ def _windows_task_element_difference(actual, expected, path):
         if difference:
             return difference
     if len(actual_children) != len(expected_children):
+        expected_names = [
+            child.tag.rsplit("}", 1)[-1] for child in expected_children
+        ]
+        actual_names = [
+            child.tag.rsplit("}", 1)[-1] for child in actual_children
+        ]
         return (
-            f"{path}: expected {len(expected_children)} child elements, "
-            f"got {len(actual_children)}"
+            f"{path}: expected child elements {expected_names!r}, "
+            f"got {actual_names!r}"
         )
     return None
 

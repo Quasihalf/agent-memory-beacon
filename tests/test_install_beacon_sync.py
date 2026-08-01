@@ -704,6 +704,32 @@ class InstallBeaconSyncTests(unittest.TestCase):
             install_beacon_sync._same_windows_task_xml(reordered, xml)
         )
 
+    def test_windows_task_difference_lists_mismatched_child_names(self):
+        expected = install_beacon_sync.build_windows_task_xml(
+            python_path=self.python,
+            script_path=self.script,
+            config_path=self.config,
+            user_id=r"DESKTOP\demo",
+        )
+        actual_root = ET.fromstring(expected)
+        principal = actual_root.find("t:Principals/t:Principal", TASK_NS)
+        principal.remove(principal.find("t:RunLevel", TASK_NS))
+        actual = ET.tostring(actual_root, encoding="unicode")
+
+        difference = install_beacon_sync._windows_task_xml_difference(
+            actual,
+            expected,
+        )
+
+        self.assertIn(
+            "expected child elements ['UserId', 'LogonType', 'RunLevel']",
+            difference,
+        )
+        self.assertIn(
+            "got ['UserId', 'LogonType']",
+            difference,
+        )
+
     def test_current_windows_user_reads_process_token_and_releases_resources(self):
         class Box:
             def __init__(self, value=0):
