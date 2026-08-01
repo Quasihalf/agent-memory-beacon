@@ -138,7 +138,6 @@ def build_windows_task_xml(
     principal = ET.SubElement(principals, _tag("Principal"), {"id": "Author"})
     ET.SubElement(principal, _tag("UserId")).text = user_id
     ET.SubElement(principal, _tag("LogonType")).text = "InteractiveToken"
-    ET.SubElement(principal, _tag("RunLevel")).text = "LeastPrivilege"
 
     settings = ET.SubElement(task, _tag("Settings"))
     for name, value in (
