@@ -40,6 +40,9 @@ HOOK_OWNER_MARKER = "agent_memory_beacon_sync_hook=1"
 HOOK_EVENTS = ("Stop", "SessionStart")
 MAX_HOOK_FILE_BYTES = 4 * 1024 * 1024
 MAX_TASK_XML_BYTES = 4 * 1024 * 1024
+_TASK_XML_UNORDERED_CONTAINERS = frozenset(
+    ("Task", "RegistrationInfo", "Settings")
+)
 WINDOWS_TASK_MISSING_MARKERS = (
     "cannot find the file specified",
     "specified task name does not exist",
@@ -1045,6 +1048,11 @@ def _same_windows_task_xml(left, right):
 
 
 def _normalized_task_xml(value):
+    root = _normalized_task_xml_root(value)
+    return ET.tostring(root, encoding="utf-8")
+
+
+def _normalized_task_xml_root(value):
     root = _task_xml_root(value)
     for element in root.iter():
         if element.text is not None and not element.text.strip():
@@ -1055,15 +1063,18 @@ def _normalized_task_xml(value):
             attributes = sorted(element.attrib.items())
             element.attrib.clear()
             element.attrib.update(attributes)
-    return ET.tostring(root, encoding="utf-8")
+        name = element.tag.rsplit("}", 1)[-1]
+        if name in _TASK_XML_UNORDERED_CONTAINERS:
+            element[:] = sorted(element, key=lambda child: child.tag)
+    return root
 
 
 def _windows_task_xml_difference(actual, expected):
     if actual is None or expected is None:
         return f"expected task present={expected is not None}, got {actual is not None}"
     return _windows_task_element_difference(
-        _task_xml_root(actual),
-        _task_xml_root(expected),
+        _normalized_task_xml_root(actual),
+        _normalized_task_xml_root(expected),
         "/Task",
     ) or "normalized XML differs"
 

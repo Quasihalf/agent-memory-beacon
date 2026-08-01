@@ -682,6 +682,28 @@ class InstallBeaconSyncTests(unittest.TestCase):
         create = next(arguments for arguments in calls if "/Create" in arguments)
         self.assertEqual(create[create.index("/TN") + 1], task_name)
 
+    def test_windows_task_comparison_ignores_schema_all_element_order(self):
+        xml = install_beacon_sync.build_windows_task_xml(
+            python_path=self.python,
+            script_path=self.script,
+            config_path=self.config,
+            user_id=r"DESKTOP\demo",
+        )
+        root = ET.fromstring(xml)
+        registration = root.find("t:RegistrationInfo", TASK_NS)
+        triggers = root.find("t:Triggers", TASK_NS)
+        principals = root.find("t:Principals", TASK_NS)
+        settings = root.find("t:Settings", TASK_NS)
+        actions = root.find("t:Actions", TASK_NS)
+        registration[:] = list(reversed(registration))
+        settings[:] = list(reversed(settings))
+        root[:] = [principals, registration, settings, triggers, actions]
+        reordered = ET.tostring(root, encoding="unicode")
+
+        self.assertTrue(
+            install_beacon_sync._same_windows_task_xml(reordered, xml)
+        )
+
     def test_current_windows_user_reads_process_token_and_releases_resources(self):
         class Box:
             def __init__(self, value=0):
