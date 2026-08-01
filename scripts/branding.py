@@ -4,7 +4,7 @@ from pathlib import Path
 
 PRODUCT_NAME = "Agent Memory Beacon"
 PRODUCT_SLUG = "agent-memory-beacon"
-PRODUCT_VERSION = "0.5.0"
+PRODUCT_VERSION = "0.7.0"
 CODE_PREFIX = "agent_memory_beacon"
 DEFAULT_VAULT_DIRNAME = "AgentMemoryBeacon"
 

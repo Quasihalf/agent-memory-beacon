@@ -1,9 +1,9 @@
-# Agent Memory Beacon v0.5.0 — Configuration
+# Agent Memory Beacon v0.7.0 — Configuration
 # ===============================================
 # Copy this file to config.yaml and fill in your paths.
 # config.yaml is git-ignored and never committed.
 
-version: "0.5.0"
+version: "0.7.0"
 product_id: "agent_memory_beacon"
 agent: "codex"   # codex, claude, or zcode
 
@@ -87,6 +87,42 @@ harvest_interval_seconds: 300
 harvest_start_max_transcripts: 32
 harvest_start_time_budget_seconds: 180
 
+# Verified multi-device transport. Keep disabled until both one-way Syncthing
+# folders and this device's role are configured. Never synchronize the
+# canonical Vault bidirectionally. Every non-empty path must expand to an
+# absolute path. State, outbox, published, received, replica, inbox, attachment
+# roots, and the canonical Vault must not be equal, nested, or aliases through
+# symlinks.
+beacon_sync:
+  enabled: false
+  role: ""  # macOS: authority; Windows: producer-replica
+  device_id: ""  # required only for producer-replica
+  state_dir: ""
+  outbox_dir: ""
+  published_dir: ""
+  replica_path: ""
+  received_published_dir: ""
+  inboxes: []
+  # Producer-only allowlist. Files are transported only when a transcript
+  # explicitly references them; these directories are never scanned in bulk.
+  attachment_roots: []
+  # Authority example:
+  # inboxes:
+  #   - device_id: "windows-main"
+  #     path: "~/AgentMemoryBeaconSync/inbox/windows-main"
+  # Windows producer example:
+  # attachment_roots:
+  #   - "%USERPROFILE%/.codex/attachments"
+  #   - "%USERPROFILE%/Downloads"
+  max_chunk_bytes: 16777216
+  max_gap_bytes: 536870912
+  max_attachment_bytes: 33554432
+  max_events_per_run: 32
+  max_event_json_bytes: 131072
+  max_object_bytes: 33554432
+  max_replica_object_bytes: 67108864
+  gc_retention_seconds: 604800
+
 # Dynamic Codex memory refresh. The UserPromptSubmit hook remains installed
 # when disabled and immediately returns an empty JSON object for quick rollback.
 memory_runtime:
@@ -104,6 +140,25 @@ memory_runtime:
   max_refresh: 6
   max_risk_or_error: 10
   token_budget: 1500
+
+# Private, bounded checkpoint instructions for rolling conversation summaries.
+# They are injected by the prompt hook only; harvesting and recall are separate.
+conversation_summary:
+  enabled: true
+  min_substantive_messages: 5
+  message_interval: 10
+  stale_after_minutes: 30
+  retry_interval_messages: 2
+  max_summary_bytes: 4096
+  max_recall: 1
+  token_budget: 400
+
+# Read-only Obsidian projection of the canonical memory graph. It creates
+# visible Markdown nodes without changing formal memory or recall authority.
+graph_projection:
+  enabled: true
+  output_dir: "03-Maps/_memory-nodes"
+  max_nodes: 5000
 
 # Privacy-safe evidence about whether recalled memory helped. Events contain
 # only memory IDs/revisions, hashed sessions, trigger metadata, weak feedback

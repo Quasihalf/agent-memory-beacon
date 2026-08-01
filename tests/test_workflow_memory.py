@@ -133,17 +133,19 @@ class WorkflowMemoryTests(unittest.TestCase):
                 "avoid": " ".join(record["negative_signals"]),
                 "requires": ["workflow-prerequisite"],
                 "expires_at": "2026-08-01T12:00:00+08:00",
+                "supports": ["project_rule-source-first"],
             }
             formal = read_text(formal_path)
             formal = formal.replace(
                 "- status: `active`\n",
                 "- status: `active`\n"
                 "- requires: `workflow-prerequisite`\n"
-                "- expires_at: `2026-08-01T12:00:00+08:00`\n",
+                "- expires_at: `2026-08-01T12:00:00+08:00`\n"
+                "- supports: `project_rule-source-first`\n",
                 1,
             )
             formal = formal.replace(
-                f"- revision: `{memory_revision({**lifecycle, 'requires': [], 'expires_at': ''})}`",
+                f"- revision: `{memory_revision({**lifecycle, 'requires': [], 'expires_at': '', 'supports': []})}`",
                 f"- revision: `{memory_revision(lifecycle)}`",
                 1,
             )
@@ -163,6 +165,7 @@ class WorkflowMemoryTests(unittest.TestCase):
             self.assertIsNotNone(parsed)
             self.assertEqual(parsed["requires"], ["workflow-prerequisite"])
             self.assertEqual(parsed["expires_at"], lifecycle["expires_at"])
+            self.assertEqual(parsed["supports"], ["project_rule-source-first"])
 
     def test_platform_injected_context_does_not_create_workflow_memory(self):
         messages = [

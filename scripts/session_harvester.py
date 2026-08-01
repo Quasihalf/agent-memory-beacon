@@ -30,6 +30,12 @@ from annotation_quality import (
 from urllib.parse import unquote, urlparse
 from datetime import datetime, timezone, timedelta
 from config import load_config
+from conversation_summary import (
+    canonical_summary_text,
+    extract_rolling_summary,
+    strip_rolling_summary_markers,
+    summary_revision,
+)
 from transcript_utils import (
     find_latest_transcript,
     find_recent_transcripts as find_recent_transcripts_from_config,
@@ -53,6 +59,7 @@ from memory_judge import (
 from memory_effectiveness import write_effectiveness_report
 from memory_promotion import refresh_promotion_proposals
 from memory_schema import (
+    MEMORY_RELATION_FIELDS,
     RUNTIME_SCHEMA_VERSION,
     canonical_project,
     expected_formal_section_revision,
@@ -112,6 +119,14 @@ _HARVEST_LOCK_DESCRIPTORS = {}
 _CURSOR_EXPECTATION_UNSET = object()
 MAX_HEARTBEAT_BYTES = 16 * 1024 * 1024
 MAX_MANAGED_REPAIR_FILE_BYTES = 16 * 1024 * 1024
+MAX_RUNTIME_STATE_BYTES = 1024 * 1024
+SUMMARY_PROVENANCE_FIELDS = (
+    "summary_mode",
+    "summary_revision",
+    "summary_updated_at",
+    "summary_source_cursor",
+    "summary_checkpoint",
+)
 
 
 @dataclass(frozen=True)
@@ -285,8 +300,10 @@ def _rebuild_vault_knowledge_indexes_cooperative(
     notes = knowledge_index_module.collect_indexable_notes(
         vault,
         excluded_roots=(
+            *knowledge_index_module.adaptive_candidate_roots(cfg),
             *knowledge_index_module.error_evidence_candidate_roots(cfg),
             *annotation_candidate_roots(cfg),
+            *knowledge_index_module.promotion_proposal_roots(cfg),
         ),
         additional_note_types=(
             knowledge_index_module.configured_adaptive_formal_paths(cfg)
@@ -296,7 +313,14 @@ def _rebuild_vault_knowledge_indexes_cooperative(
     atoms = knowledge_index_module.build_global_atoms(vault)
     recall_index = knowledge_index_module.build_recall_index(notes)
     memory_graph = knowledge_index_module.build_memory_graph(notes, recall_index)
+    graph_quality = knowledge_index_module.validate_memory_graph(
+        memory_graph,
+        recall_index.get("units"),
+        allow_legacy=False,
+        expected_generation_id=recall_index.get("generation_id", ""),
+    )
     recall_path = knowledge_index_module.configured_recall_index_path(cfg)
+    graph_path = knowledge_index_module.graph_path_for_index(recall_path)
     _cooperative_ensure_directory(
         os.path.dirname(recall_path),
         ownership_check,
@@ -325,8 +349,15 @@ def _rebuild_vault_knowledge_indexes_cooperative(
             json.dumps(recall_index, ensure_ascii=False, indent=2) + "\n",
         ),
         (
-            os.path.join(output_dir, "memory-graph.json"),
+            graph_path,
             json.dumps(memory_graph, ensure_ascii=False, indent=2) + "\n",
+        ),
+        (
+            os.path.join(output_dir, "memory-graph-quality.md"),
+            knowledge_index_module.render_memory_graph_quality_markdown(
+                memory_graph,
+                recall_index.get("units"),
+            ),
         ),
         (
             os.path.join(output_dir, "recall-context.md"),
@@ -346,12 +377,63 @@ def _rebuild_vault_knowledge_indexes_cooperative(
             root=vault,
         )
         written.append(path)
+    projection = {
+        "nodes": 0,
+        "edges": 0,
+        "written": 0,
+        "removed": 0,
+        "root": "",
+    }
+    projection_cfg = dict(cfg.get("graph_projection") or {})
+    # Frozen migration writers only permit paths declared in their signed plan.
+    # The projection is a rebuildable visual cache with a dynamic file set.
+    if projection_cfg.get("enabled", True) and mutation_io is None:
+        projection = knowledge_index_module.sync_graph_projection(
+            vault,
+            memory_graph,
+            projection_cfg,
+            ensure_directory=lambda path: _cooperative_ensure_directory(
+                path,
+                ownership_check,
+                mutation_io,
+                root=vault,
+            ),
+            read_text=lambda path: _cooperative_read_text(
+                path,
+                ownership_check,
+                mutation_io,
+                root=vault,
+            ),
+            write_text=lambda path, content: _cooperative_atomic_write(
+                path,
+                content,
+                ownership_check,
+                mutation_io,
+                root=vault,
+            ),
+            remove_file=lambda path: _cooperative_remove_file(
+                path,
+                ownership_check,
+                mutation_io,
+                root=vault,
+            ),
+        )
     return {
         "keyword_terms": len(keyword_index.get("keywords", {})),
         "global_atoms": len(atoms.get("atoms", [])),
         "recall_units": len(recall_index.get("units", [])),
         "graph_nodes": len(memory_graph.get("nodes", [])),
         "graph_edges": len(memory_graph.get("edges", [])),
+        "graph_invalid_edges": graph_quality["invalid_edges"],
+        "graph_missing_evidence": graph_quality["missing_evidence"],
+        "graph_unbound_evidence": graph_quality["unbound_evidence"],
+        "graph_missing_memory_nodes": graph_quality["missing_memory_nodes"],
+        "graph_generation_id": recall_index.get("generation_id", ""),
+        "graph_projection_nodes": projection["nodes"],
+        "graph_projection_edges": projection["edges"],
+        "graph_projection_written": projection["written"],
+        "graph_projection_removed": projection["removed"],
+        "graph_projection_root": projection["root"],
         "written": written,
     }
 
@@ -666,6 +748,26 @@ def prepare_transcript_harvest(cfg, transcript_path):
             "meta": read_transcript_metadata(transcript_path),
         }
     content = parsed["text"]
+    raw_assistant_text = "\n".join(
+        message["text"]
+        for message in adaptive_parsed.get("messages", [])
+        if message.get("role") == "assistant"
+    )
+    parsed_meta = parsed.get("meta", {})
+    summary_checkpoint = read_summary_checkpoint(
+        cfg,
+        generate_session_id(transcript_path, parsed_meta),
+        transcript_path,
+    )
+    rolling = None
+    if not parsed_meta.get("is_subagent") or summary_checkpoint is not None:
+        rolling = extract_rolling_summary(
+            raw_assistant_text,
+            max_bytes=cfg.get("conversation_summary", {}).get(
+                "max_summary_bytes", 4096
+            ),
+        )
+    adaptive_parsed = without_rolling_summary_markers(adaptive_parsed)
     harvest_text = "\n".join(
         message["text"]
         for message in adaptive_parsed.get("messages", [])
@@ -679,10 +781,16 @@ def prepare_transcript_harvest(cfg, transcript_path):
         extract_errors(harvest_text),
         ("type", "resolution", "project"),
     )
-    summary = extract_session_summary(harvest_text)
-    decisions, errors, summary = sanitize_harvested_content(
-        cfg, decisions, errors, summary
+    final_summary = extract_session_summary(harvest_text)
+    summary = final_summary or (
+        canonical_summary_text(rolling) if rolling else None
     )
+    summary_mode = "final" if final_summary else "rolling" if rolling else ""
+    decisions, errors, summary = sanitize_harvested_content(
+        cfg, decisions, errors, summary if final_summary else None
+    )
+    if rolling and not final_summary:
+        summary = canonical_summary_text(rolling)
     annotation_partition = partition_annotations(decisions, errors)
     decisions = annotation_partition["decisions"]
     errors = annotation_partition["errors"]
@@ -691,6 +799,8 @@ def prepare_transcript_harvest(cfg, transcript_path):
     meta.update({k: v for k, v in parsed.get("meta", {}).items() if v})
     project = detect_project(cfg, content, meta, annotation_text=harvest_text)
     session_id = generate_session_id(transcript_path, meta)
+    if not summary:
+        summary_checkpoint = None
     date_str = normalize_iso_date(
         meta.get("date"), datetime.now(CST).strftime("%Y-%m-%d")
     )
@@ -844,8 +954,19 @@ def prepare_transcript_harvest(cfg, transcript_path):
 
     written = 0
     if decisions or errors or summary:
-        written = write_session_to_vault(cfg, session_id, date_str, project, meta,
-                                         decisions, errors, summary)
+        written = write_session_to_vault(
+            cfg,
+            session_id,
+            date_str,
+            project,
+            meta,
+            decisions,
+            errors,
+            summary,
+            summary_mode=summary_mode,
+            summary_source_cursor=snapshot_cursor,
+            summary_checkpoint=summary_checkpoint,
+        )
 
     source_cursor = expected_cursor or "initial"
     if decisions:
@@ -889,6 +1010,30 @@ def prepare_transcript_harvest(cfg, transcript_path):
         project=project,
         session_id=session_id,
     )
+
+
+def without_rolling_summary_markers(parsed):
+    """Return a transcript slice whose assistant messages exclude summary controls."""
+    if not isinstance(parsed, dict):
+        return parsed
+    sanitized = dict(parsed)
+    messages = []
+    for message in parsed.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        cleaned = dict(message)
+        if cleaned.get("role") == "assistant":
+            cleaned["text"] = strip_rolling_summary_markers(
+                cleaned.get("text", "")
+            )
+        messages.append(cleaned)
+    sanitized["messages"] = messages
+    sanitized["text"] = "\n".join(
+        str(message.get("text") or "")
+        for message in messages
+        if message.get("text")
+    )
+    return sanitized
 
 
 def commit_transcript_harvest(cfg, outcome):
@@ -1097,12 +1242,12 @@ def check_codex_profile_on_start(cfg):
     overwrite_arg = " --overwrite" if status.get("changed_skills") else ""
     print(
         "[codex-profile] 建议先预览: "
-        f'cd "{SCANNER_DIR}" && "{python_path}" '
+        f'cd "{SCANNER_DIR}" && "{python_path}" -B '
         f"codex_profile_sync.py apply --include-config{overwrite_arg} --dry-run"
     )
     print(
         "[codex-profile] 确认后再应用: "
-        f'cd "{SCANNER_DIR}" && "{python_path}" '
+        f'cd "{SCANNER_DIR}" && "{python_path}" -B '
         f"codex_profile_sync.py apply --include-config{overwrite_arg}"
     )
     return True
@@ -1693,8 +1838,20 @@ def generate_session_id(transcript_path, meta):
 
 
 # ── Vault Writing ──────────────────────────────────────────────
-def write_session_to_vault(cfg, session_id, date_str, project, meta,
-                           decisions, errors, summary):
+def write_session_to_vault(
+    cfg,
+    session_id,
+    date_str,
+    project,
+    meta,
+    decisions,
+    errors,
+    summary,
+    *,
+    summary_mode="",
+    summary_source_cursor=None,
+    summary_checkpoint=None,
+):
     """Write session summary .md to vault. Returns count of files written."""
     project = safe_project_slug(project) or "Project-Infra"
     date_str = normalize_iso_date(
@@ -1708,9 +1865,19 @@ def write_session_to_vault(cfg, session_id, date_str, project, meta,
     project, date_str = reuse_existing_session_route(
         cfg, session_id, project, date_str
     )
-    decisions, errors, summary = sanitize_harvested_content(
-        cfg, decisions, errors, summary
+    decisions, errors, _unused_summary = sanitize_harvested_content(
+        cfg, decisions, errors, None
     )
+    summary, summary_revision_value, summary_mode = prepare_summary_for_persistence(
+        cfg,
+        summary,
+        summary_mode,
+    )
+    summary_source_cursor = normalize_summary_source_cursor(
+        summary_source_cursor
+    )
+    summary_checkpoint = normalize_summary_checkpoint(summary_checkpoint)
+    summary_replacement = bool(summary)
     sessions_dir = safe_vault_path(
         cfg['vault_path'], "01-Projects", project, "Memory", "sessions"
     )
@@ -1723,6 +1890,8 @@ def write_session_to_vault(cfg, session_id, date_str, project, meta,
     harvested_at = datetime.now(CST).isoformat()
     first_harvested_at = harvested_at
     route_metadata_changed = False
+    summary_provenance = {}
+    rejected_summary_replacement = False
 
     # Check if already exists (idempotent)
     if os.path.exists(filepath):
@@ -1740,11 +1909,37 @@ def write_session_to_vault(cfg, session_id, date_str, project, meta,
         existing_errors = existing.get("errors_encountered", [])
         new_decisions = merge_unique(decisions, existing_decisions, ("text", "context"))
         new_errors = merge_unique(errors, existing_errors, ("type", "resolution"))
+        if summary and not summary_cursor_is_newer(
+            existing.get("summary_source_cursor"),
+            summary_source_cursor,
+        ):
+            summary = None
+            summary_revision_value = None
+            summary_mode = ""
+            summary_replacement = False
+            rejected_summary_replacement = True
         summary_changed = bool(summary) and normalize_session_summary(summary) != normalize_session_summary(existing_summary)
+        summary_metadata_changed = bool(summary) and any(
+            (
+                existing.get("summary_mode") != summary_mode,
+                existing.get("summary_revision") != summary_revision_value,
+                (
+                    bool(summary_source_cursor)
+                    and existing.get("summary_source_cursor")
+                    != summary_source_cursor
+                ),
+                (
+                    summary_checkpoint is not None
+                    and existing.get("summary_checkpoint")
+                    != summary_checkpoint
+                ),
+            )
+        )
         if (
             not new_decisions
             and not new_errors
             and not summary_changed
+            and not summary_metadata_changed
             and not route_metadata_changed
         ):
             return 0
@@ -1752,8 +1947,27 @@ def write_session_to_vault(cfg, session_id, date_str, project, meta,
         errors = existing_errors + new_errors
         summary = summary if summary else existing_summary
         existing_title = clean_title_text(existing.get("ai_title", ""))
-        if generated_title == "会话记忆" and existing_title:
+        if rejected_summary_replacement and existing_title:
             generated_title = existing_title
+        elif generated_title == "会话记忆" and existing_title:
+            generated_title = existing_title
+        if not summary_replacement:
+            summary_provenance = {
+                field: existing[field]
+                for field in SUMMARY_PROVENANCE_FIELDS
+                if field in existing
+            }
+
+    if summary_replacement:
+        summary_provenance = {
+            "summary_mode": summary_mode,
+            "summary_revision": summary_revision_value,
+            "summary_updated_at": harvested_at,
+        }
+        if summary_source_cursor:
+            summary_provenance["summary_source_cursor"] = summary_source_cursor
+        if summary_checkpoint is not None:
+            summary_provenance["summary_checkpoint"] = summary_checkpoint
 
     decisions = normalize_session_memory_records(
         decisions,
@@ -1792,6 +2006,7 @@ def write_session_to_vault(cfg, session_id, date_str, project, meta,
         "first_harvested_at": first_harvested_at,
         "harvested_at": harvested_at,
     }
+    fm.update(summary_provenance)
 
     # Build body
     body_parts = [f"# {fm['ai_title']}\n"]
@@ -1835,6 +2050,126 @@ def write_session_to_vault(cfg, session_id, date_str, project, meta,
 
     print(f"[harvester] Wrote session: {filepath}")
     return 1
+
+
+def prepare_summary_for_persistence(cfg, summary, summary_mode):
+    """Return a sanitized body, revision, and normalized mode."""
+    if not summary:
+        return None, None, ""
+    mode = summary_mode if summary_mode in {"rolling", "final"} else "final"
+    if mode == "rolling":
+        try:
+            payload = json.loads(str(summary))
+            canonical_summary_text(payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None, None, ""
+        sanitized = {}
+        for key, value in payload.items():
+            if isinstance(value, str):
+                sanitized[key] = sanitize_obsidian_markdown(value, cfg)
+            elif isinstance(value, list):
+                sanitized[key] = [
+                    sanitize_obsidian_markdown(item, cfg)
+                    for item in value
+                ]
+            else:
+                sanitized[key] = value
+        try:
+            body = canonical_summary_text(sanitized)
+            revision = summary_revision(sanitized)
+        except (TypeError, ValueError):
+            return None, None, ""
+        return body, revision, mode
+
+    body = sanitize_obsidian_markdown(summary, cfg).strip()
+    if not body:
+        return None, None, ""
+    revision = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return body, revision, mode
+
+
+def normalize_summary_source_cursor(value):
+    """Return bounded internal cursor metadata or ``None``."""
+    if value is None:
+        return None
+    cursor = re.sub(r"[\x00-\x1f\x7f]", "", str(value)).strip()
+    match = re.fullmatch(r"(file-bytes|zcode-messages):(\d+)", cursor)
+    return cursor if match else None
+
+
+def summary_cursor_is_newer(current, proposed):
+    """Return whether a proposed summary is strictly newer than persisted data."""
+    if current in (None, ""):
+        return True
+    current_cursor = normalize_summary_source_cursor(current)
+    proposed_cursor = normalize_summary_source_cursor(proposed)
+    if not current_cursor or not proposed_cursor:
+        return False
+    current_kind, current_value = current_cursor.split(":", 1)
+    proposed_kind, proposed_value = proposed_cursor.split(":", 1)
+    return (
+        current_kind == proposed_kind
+        and int(proposed_value) > int(current_value)
+    )
+
+
+def normalize_summary_checkpoint(value):
+    """Return a positive checkpoint sequence or ``None``."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def read_summary_checkpoint(cfg, session_id, transcript_path):
+    """Read the hook's latest checkpoint sequence when its private state exists."""
+    runtime = cfg.get("memory_runtime")
+    state_dir = runtime.get("resolved_state_dir") if isinstance(runtime, dict) else None
+    vault = cfg.get("vault_path")
+    if not state_dir or not vault:
+        return None
+
+    path_session_id = session_id_from_path(transcript_path)
+    session_keys = tuple(
+        dict.fromkeys(
+            (
+                f"session:{session_id}",
+                f"thread:{session_id}",
+                f"conversation:{session_id}",
+                f"session:{path_session_id}",
+                f"thread:{path_session_id}",
+                f"conversation:{path_session_id}",
+                f"transcript:{os.path.normpath(transcript_path)}",
+            )
+        )
+    )
+    for session_key in session_keys:
+        session_hash = hashlib.sha256(
+            session_key.encode("utf-8")
+        ).hexdigest()[:32]
+        state_path = os.path.join(state_dir, f"{session_hash}.json")
+        try:
+            data = secure_read_bytes(
+                state_path,
+                MAX_RUNTIME_STATE_BYTES,
+                root=vault,
+            )
+            if len(data) > MAX_RUNTIME_STATE_BYTES:
+                continue
+            state = json.loads(data.decode("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            continue
+        if (
+            not isinstance(state, dict)
+            or state.get("schema_version") != 1
+            or state.get("session_hash") != session_hash
+        ):
+            continue
+        checkpoint = normalize_summary_checkpoint(
+            state.get("summary_checkpoint_sequence")
+        )
+        if checkpoint is not None:
+            return checkpoint
+    return None
 
 
 def normalize_session_memory_records(
@@ -2565,6 +2900,9 @@ def serialize_formal_project_record(record, memory_type):
             item[key] = record[key]
     if record.get("requires"):
         item["requires"] = list(record["requires"])
+    for key in MEMORY_RELATION_FIELDS:
+        if record.get(key):
+            item[key] = list(record[key])
     return item
 
 
@@ -2951,13 +3289,24 @@ def sanitize_generated_memory_markdown(content, cfg, rel_path=""):
     revision_line = re.compile(
         r"(?m)^[ \t]*(?:-\s*)?revision:\s*[`'\"]?[0-9a-fA-F]{64}[`'\"]?[ \t]*$"
     )
+    rolling_summary = re.compile(
+        r"(?m)^## Session Summary[ \t]*\n(?:[ \t]*\n)*"
+        r"\{[^\n]*\}[ \t]*(?:\n|$)"
+    )
 
     def protect(match):
         marker = f"\x00AMB_REVISION_{len(protected)}\x00"
         protected.append((marker, match.group(0)))
         return marker
 
-    sanitized = sanitize_obsidian_markdown(revision_line.sub(protect, content), cfg)
+    fm, _body = split_markdown_frontmatter(content)
+    protected_content = content
+    if fm.get("summary_mode") == "rolling":
+        protected_content = rolling_summary.sub(protect, protected_content)
+    sanitized = sanitize_obsidian_markdown(
+        revision_line.sub(protect, protected_content),
+        cfg,
+    )
     for marker, original in protected:
         sanitized = sanitized.replace(marker, original)
     return refresh_generated_memory_revisions(sanitized, rel_path)
@@ -3470,6 +3819,10 @@ def rebuild_memory_index(
         )
     _check_ownership(ownership_check)
     knowledge_seconds = monotonic() - knowledge_started
+    graph_path = knowledge_index_module.graph_path_for_index(
+        knowledge_index_module.configured_recall_index_path(cfg)
+    )
+    graph_rel_path = os.path.relpath(graph_path, vault).replace(os.sep, "/")
 
     render_write_started = monotonic()
     sessions.sort(
@@ -3732,7 +4085,7 @@ def rebuild_memory_index(
     body.append(
         f"- Memory graph: `{knowledge_indexes.get('graph_nodes', 0)}` nodes / "
         f"`{knowledge_indexes.get('graph_edges', 0)}` edges "
-        "(`05-Agent-Memory/memory-graph.json`)"
+        f"(`{graph_rel_path}`)"
     )
 
     content = "---\n"
@@ -4088,7 +4441,7 @@ def run_scanner_incremental(cfg):
         # Still run — analyzer falls back when API key is empty or API fails.
 
     python = cfg.get("python_path") or sys.executable
-    cmd = [python, runner]
+    cmd = [python, "-B", runner]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
                                 cwd=SCANNER_DIR, env=os.environ.copy())

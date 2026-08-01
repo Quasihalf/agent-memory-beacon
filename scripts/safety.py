@@ -250,7 +250,7 @@ def durable_unlink(
         )
 
 
-def durable_rmdir(path, root=None):
+def durable_rmdir(path, root=None, expected_identity=None):
     """Remove one empty directory without following managed-path symlinks."""
     path = os.path.abspath(os.path.expanduser(os.fspath(path)))
     with _pinned_parent(path, root=root) as pin:
@@ -266,6 +266,11 @@ def durable_rmdir(path, root=None):
             if (
                 not stat.S_ISDIR(named.st_mode)
                 or _directory_identity(named) != _directory_identity(current)
+            ):
+                raise OSError("rmdir destination changed")
+            if (
+                expected_identity is not None
+                and _directory_identity(current) != tuple(expected_identity)
             ):
                 raise OSError("rmdir destination changed")
             if os.listdir(descriptor):

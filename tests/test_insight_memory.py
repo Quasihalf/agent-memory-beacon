@@ -11,7 +11,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
 sys.path.insert(0, SCRIPTS_DIR)
 
-from insight_memory import process_insight_memory
+from insight_memory import process_insight_memory, render_formal_record
 from memory_schema import parse_formal_section
 from safety import split_frontmatter_text
 
@@ -55,6 +55,34 @@ class InsightMemoryTests(unittest.TestCase):
         self.assertEqual(records[0]["origin"], "user")
         self.assertEqual(records[0]["source_refs"], ["session:session-1"])
         self.assertEqual(self.candidate_paths(), [])
+
+    def test_formal_insight_renderer_round_trips_contradiction_relation(self):
+        record = {
+            "id": "insight-contradiction-source",
+            "status": "active",
+            "maturity": "seed",
+            "confidence": 0.86,
+            "origin": "user",
+            "project": "demo",
+            "scope": "project",
+            "title": "保守关系必须有明确证据",
+            "summary": "不为图谱好看而猜测记忆关系",
+            "novelty": "图谱密度不能替代关系证据",
+            "transfer": ["知识图谱"],
+            "boundary": "人工明确声明关系时适用",
+            "source_refs": ["session:contradiction-source"],
+            "contradicts": ["decision-infer-every-edge"],
+        }
+
+        rendered = render_formal_record(record)
+        title, _, section = rendered.removeprefix("## ").partition("\n")
+        parsed = parse_formal_section(title, section, "insight")
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(
+            parsed["contradicts"],
+            ["decision-infer-every-edge"],
+        )
 
     def test_user_authored_learn_tag_is_not_a_trusted_annotation(self):
         result = self.process(

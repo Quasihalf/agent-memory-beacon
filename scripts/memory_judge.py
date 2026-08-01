@@ -15,6 +15,7 @@ import yaml
 from annotation_quality import QUALITY_FORMAL, QUALITY_REJECTED, assess_favor
 from memory_authority import render_authority_markdown_lines
 from memory_schema import (
+    MEMORY_RELATION_FIELDS,
     RUNTIME_SCHEMA_VERSION,
     active_formal_lifecycle_metadata,
     canonical_project,
@@ -872,6 +873,13 @@ def render_formal_memory_entry(record, lifecycle_metadata=None):
         ) + "\n"
     if formal.get("expires_at"):
         lifecycle_lines += f"- expires_at: `{formal['expires_at']}`\n"
+    for key in MEMORY_RELATION_FIELDS:
+        if formal.get(key):
+            lifecycle_lines += (
+                f"- {key}: "
+                + ", ".join(f"`{item}`" for item in formal[key])
+                + "\n"
+            )
     authority_lines = "".join(
         f"{line}\n" for line in render_authority_markdown_lines(formal)
     )

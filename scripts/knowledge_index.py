@@ -20,8 +20,27 @@ from annotation_quality import (
     filter_runtime_quality,
     is_annotation_candidate_path,
 )
+from conversation_summary import (
+    REQUIRED_FIELDS as CONVERSATION_SUMMARY_REQUIRED_FIELDS,
+    SUMMARY_FIELDS as CONVERSATION_SUMMARY_FIELDS,
+    build_conversation_summary_record,
+    conversation_summary_source_project,
+)
 from experience_memory import build_experience_bundles
+from graph_projection import sync_graph_projection
+from memory_graph import (
+    GRAPH_SCHEMA_VERSION,
+    add_graph_edge,
+    analyze_memory_graph,
+    graph_evidence,
+    graph_node,
+    graph_path_for_index,
+    render_memory_graph_quality_markdown,
+    upsert_graph_node,
+    validate_memory_graph,
+)
 from memory_schema import (
+    MEMORY_RELATION_FIELDS,
     RUNTIME_SCHEMA_VERSION,
     canonical_project,
     formal_identity_key,
@@ -49,9 +68,24 @@ DEFAULT_OUTPUT_DIR = "05-Agent-Memory"
 DEFAULT_RECALL_INDEX_PATH = "05-Agent-Memory/recall-index.json"
 MAX_TERMS_PER_NOTE = 100
 MAX_ENTRIES_PER_TERM = 20
+SESSION_SUMMARY_PATTERN = re.compile(
+    r"(?ms)^## Session Summary\s*\n(.*?)(?=^## |\Z)"
+)
+LEGACY_SUMMARY_FIELDS = frozenset(
+    {"projects", "primary", "decisions", "errors", "session_id", "summary"}
+)
+LEGACY_SUMMARY_REQUIRED_FIELDS = frozenset({"projects", "primary", "summary"})
+LEGACY_DECISION_FIELDS = frozenset({"id", "text", "context"})
+LEGACY_ERROR_FIELDS = frozenset({"type", "resolution", "repeated_from"})
+MAPPING_LOOKING_LINE = re.compile(r"^\s*[^#\s][^:\n]*:\s*", re.MULTILINE)
+YAML_INDICATOR_CHARS = frozenset("-?:,[]{}#&*!|>'\"%@`")
+SUMMARY_CURSOR_PATTERN = re.compile(
+    r"^(file-bytes|zcode-messages):([0-9]+)$"
+)
 GENERATED_INDEX_FILES = {
     "keyword-index.md",
     "global-atoms.md",
+    "memory-graph-quality.md",
     "recall-context.md",
 }
 CONFIGURABLE_ADAPTIVE_NOTE_TYPES = frozenset(
@@ -133,9 +167,9 @@ def rebuild_vault_knowledge_indexes(cfg):
     ensure_directory_tree(output_dir, vault)
 
     candidate_roots = (
+        *adaptive_candidate_roots(cfg),
         *error_evidence_candidate_roots(cfg),
         *annotation_candidate_roots(cfg),
-        *insight_candidate_roots(cfg),
         *promotion_proposal_roots(cfg),
     )
     notes = collect_indexable_notes(
@@ -147,6 +181,12 @@ def rebuild_vault_knowledge_indexes(cfg):
     atoms = build_global_atoms(vault)
     recall_index = build_recall_index(notes)
     memory_graph = build_memory_graph(notes, recall_index)
+    graph_quality = validate_memory_graph(
+        memory_graph,
+        recall_index.get("units"),
+        allow_legacy=False,
+        expected_generation_id=recall_index.get("generation_id", ""),
+    )
 
     keyword_path = os.path.join(output_dir, "keyword-index.json")
     keyword_md_path = os.path.join(output_dir, "keyword-index.md")
@@ -154,7 +194,8 @@ def rebuild_vault_knowledge_indexes(cfg):
     atoms_md_path = os.path.join(output_dir, "global-atoms.md")
     recall_path = configured_recall_index_path(cfg)
     ensure_directory_tree(os.path.dirname(recall_path), vault)
-    graph_path = os.path.join(output_dir, "memory-graph.json")
+    graph_path = graph_path_for_index(recall_path)
+    graph_quality_path = os.path.join(output_dir, "memory-graph-quality.md")
     recall_md_path = os.path.join(output_dir, "recall-context.md")
 
     atomic_write_json(keyword_path, keyword_index, root=vault)
@@ -172,10 +213,32 @@ def rebuild_vault_knowledge_indexes(cfg):
     atomic_write_json(recall_path, recall_index, root=vault)
     atomic_write_json(graph_path, memory_graph, root=vault)
     atomic_write_text(
+        graph_quality_path,
+        render_memory_graph_quality_markdown(
+            memory_graph,
+            recall_index.get("units"),
+        ),
+        root=vault,
+    )
+    atomic_write_text(
         recall_md_path,
         render_recall_context_markdown(recall_index, memory_graph),
         root=vault,
     )
+    projection = {
+        "nodes": 0,
+        "edges": 0,
+        "written": 0,
+        "removed": 0,
+        "root": "",
+    }
+    projection_cfg = dict(cfg.get("graph_projection") or {})
+    if projection_cfg.get("enabled", True):
+        projection = sync_graph_projection(
+            vault,
+            memory_graph,
+            projection_cfg,
+        )
 
     return {
         "keyword_terms": len(keyword_index.get("keywords", {})),
@@ -183,6 +246,16 @@ def rebuild_vault_knowledge_indexes(cfg):
         "recall_units": len(recall_index.get("units", [])),
         "graph_nodes": len(memory_graph.get("nodes", [])),
         "graph_edges": len(memory_graph.get("edges", [])),
+        "graph_invalid_edges": graph_quality["invalid_edges"],
+        "graph_missing_evidence": graph_quality["missing_evidence"],
+        "graph_unbound_evidence": graph_quality["unbound_evidence"],
+        "graph_missing_memory_nodes": graph_quality["missing_memory_nodes"],
+        "graph_generation_id": recall_index.get("generation_id", ""),
+        "graph_projection_nodes": projection["nodes"],
+        "graph_projection_edges": projection["edges"],
+        "graph_projection_written": projection["written"],
+        "graph_projection_removed": projection["removed"],
+        "graph_projection_root": projection["root"],
         "written": [
             keyword_path,
             keyword_md_path,
@@ -190,6 +263,7 @@ def rebuild_vault_knowledge_indexes(cfg):
             atoms_md_path,
             recall_path,
             graph_path,
+            graph_quality_path,
             recall_md_path,
         ],
     }
@@ -442,14 +516,17 @@ def build_recall_index(notes):
         append_unique(types[unit["type"]], unit["id"])
 
     experience_bundles = build_experience_bundles(units)
+    conversation_summaries = build_conversation_summaries(notes)
 
-    return {
+    index = {
         "schema_version": RUNTIME_SCHEMA_VERSION,
         "generated_by": "knowledge_index.py",
         "generated_at": datetime.now(CST).isoformat(),
         "unit_count": len(units),
         "units": units,
         "experience_bundles": experience_bundles,
+        "conversation_summary_count": len(conversation_summaries),
+        "conversation_summaries": conversation_summaries,
         "suppressed_dependencies": suppressed,
         "suppressed_quality": suppressed_quality,
         "duplicate_groups": duplicate_groups,
@@ -457,6 +534,252 @@ def build_recall_index(notes):
         "projects": {k: v[:100] for k, v in sorted(projects.items())},
         "types": {k: v[:100] for k, v in sorted(types.items())},
     }
+    index["generation_id"] = memory_generation_id(notes, index)
+    return index
+
+
+def build_conversation_summaries(notes):
+    """Derive one latest non-formal summary for each stable session ID."""
+    latest = {}
+    for note in notes or []:
+        record = conversation_summary_from_note(note)
+        if record is None:
+            continue
+        session_id = record["session_id"]
+        candidate = (_conversation_summary_freshness(note, record), record)
+        current = latest.get(session_id)
+        if current is None or candidate[0] > current[0]:
+            latest[session_id] = candidate
+    return sorted(
+        (candidate[1] for candidate in latest.values()),
+        key=lambda item: (
+            str(item.get("project") or ""),
+            str(item.get("date") or ""),
+            str(item.get("title") or ""),
+            str(item.get("session_id") or ""),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+
+
+def conversation_summary_from_note(note):
+    """Return a Task 1 summary record from one persisted session note."""
+    if not is_indexable_note(note) or note.get("type") != "session":
+        return None
+    frontmatter = note.get("frontmatter")
+    if not isinstance(frontmatter, dict):
+        return None
+    source_note = str(note.get("path") or "")
+    source_project = conversation_summary_source_project(source_note)
+    if not source_project:
+        return None
+    declared_projects = {
+        str(value).strip()
+        for value in (frontmatter.get("project"), note.get("project"))
+        if str(value or "").strip()
+    }
+    if declared_projects and declared_projects != {source_project}:
+        return None
+    payload = _conversation_summary_payload(note)
+    if payload is None:
+        return None
+
+    payload_project = str(payload.get("project") or "").strip()
+    if payload_project and payload_project != source_project:
+        return None
+    payload = dict(payload)
+    payload["project"] = source_project
+    return build_conversation_summary_record(
+        {
+            "frontmatter": frontmatter,
+            "source_note": source_note,
+            "title": str(note.get("title") or ""),
+            "conversation_summary": payload,
+        }
+    )
+
+
+def _conversation_summary_payload(note):
+    match = SESSION_SUMMARY_PATTERN.search(str(note.get("body") or ""))
+    if not match:
+        return None
+    summary_text = match.group(1).strip()
+    if not summary_text:
+        return None
+    try:
+        parsed = yaml.safe_load(summary_text)
+    except yaml.YAMLError:
+        if not _clearly_plain_conversation_summary(summary_text):
+            return None
+        parsed = summary_text
+
+    if isinstance(parsed, dict):
+        keys = set(parsed)
+        structured_fields = set(CONVERSATION_SUMMARY_FIELDS)
+        if keys & (structured_fields - {"summary"}):
+            if not CONVERSATION_SUMMARY_REQUIRED_FIELDS.issubset(keys):
+                return None
+            return dict(parsed)
+        if _valid_legacy_conversation_summary(parsed):
+            return _legacy_conversation_summary_payload(
+                note,
+                parsed["summary"],
+            )
+        return None
+    if (
+        isinstance(parsed, str)
+        and _clearly_plain_conversation_summary(summary_text)
+    ):
+        return _legacy_conversation_summary_payload(note, parsed)
+    return None
+
+
+def _clearly_plain_conversation_summary(summary_text):
+    if not isinstance(summary_text, str):
+        return False
+    stripped = summary_text.strip()
+    if not stripped or MAPPING_LOOKING_LINE.search(stripped):
+        return False
+    for line in stripped.splitlines():
+        candidate = line.lstrip()
+        if candidate and (
+            candidate[0] in YAML_INDICATOR_CHARS
+            or candidate.startswith("...")
+        ):
+            return False
+    return True
+
+
+def _valid_legacy_conversation_summary(payload):
+    if (
+        not isinstance(payload, dict)
+        or not LEGACY_SUMMARY_REQUIRED_FIELDS.issubset(payload)
+        or set(payload) - LEGACY_SUMMARY_FIELDS
+        or not isinstance(payload.get("summary"), str)
+        or not payload["summary"].strip()
+        or not isinstance(payload.get("primary"), str)
+        or not payload["primary"].strip()
+        or not isinstance(payload.get("projects"), list)
+        or not payload["projects"]
+        or any(
+            not isinstance(item, str) or not item.strip()
+            for item in payload["projects"]
+        )
+        or not _valid_legacy_entries(
+            payload.get("decisions"),
+            LEGACY_DECISION_FIELDS,
+            optional=True,
+        )
+        or not _valid_legacy_entries(
+            payload.get("errors"),
+            LEGACY_ERROR_FIELDS,
+            list_fields={"repeated_from"},
+            optional=True,
+        )
+        or (
+            "session_id" in payload
+            and not _valid_legacy_scalar(payload.get("session_id"))
+        )
+    ):
+        return False
+    return True
+
+
+def _valid_legacy_entries(
+    value,
+    allowed_fields,
+    *,
+    list_fields=frozenset(),
+    optional=False,
+):
+    if value is None:
+        return optional
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or not item
+            or set(item) - set(allowed_fields)
+        ):
+            return False
+        for key, field_value in item.items():
+            if key in list_fields:
+                if (
+                    not isinstance(field_value, list)
+                    or any(not isinstance(member, str) for member in field_value)
+                ):
+                    return False
+            elif not isinstance(field_value, str):
+                return False
+    return True
+
+
+def _valid_legacy_scalar(value):
+    return (
+        isinstance(value, (str, int, float, bool))
+        and (not isinstance(value, str) or bool(value.strip()))
+    )
+
+
+def _legacy_conversation_summary_payload(note, summary):
+    title = str(note.get("title") or "").strip()
+    project = conversation_summary_source_project(str(note.get("path") or ""))
+    return {
+        "project": project,
+        "current_goal": summary,
+        "topics": [title] if title else [],
+        "progress": [],
+        "constraints": [],
+        "important_context": [],
+        "open_items": [],
+        "summary": summary,
+    }
+
+
+def _conversation_summary_freshness(note, record):
+    frontmatter = note.get("frontmatter") or {}
+    checkpoint = frontmatter.get("summary_checkpoint")
+    if isinstance(checkpoint, bool) or not isinstance(checkpoint, int):
+        checkpoint = -1
+    timestamp = _summary_timestamp(frontmatter.get("summary_updated_at"))
+    cursor = _summary_cursor(frontmatter.get("summary_source_cursor"))
+    return (
+        cursor is not None,
+        cursor[0] if cursor else "",
+        cursor[1] if cursor else -1,
+        timestamp is not None,
+        timestamp or datetime.min.replace(tzinfo=timezone.utc),
+        checkpoint,
+        str(record.get("date") or ""),
+        str(note.get("path") or ""),
+        str(record.get("summary_revision") or ""),
+    )
+
+
+def _summary_timestamp(value):
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip() == value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _summary_cursor(value):
+    if not isinstance(value, str):
+        return None
+    match = SUMMARY_CURSOR_PATTERN.fullmatch(value)
+    if not match:
+        return None
+    return match.group(1), int(match.group(2))
 
 
 def is_session_memory_path(path):
@@ -643,6 +966,7 @@ def inactive_recall_units_from_note(note):
 
 def enrich_runtime_unit(record):
     unit = dict(record)
+    supplied_terms = list(unit.get("terms") or [])
     unit["title"] = str(unit.get("title") or unit.get("type") or "")
     unit["summary"] = str(unit.get("summary") or "")
     operational_text = " | ".join(
@@ -665,19 +989,77 @@ def enrich_runtime_unit(record):
     unit["recall_summary"] = compact_text(recall_text, 600)
     unit["path"] = str(unit.get("path") or "")
     unit["source_note"] = str(unit.get("source_note") or "")
-    unit["terms"] = extract_terms(
-        " ".join(
-            [
-                unit["title"],
-                unit.get("project", ""),
-                unit["summary"],
-                operational_text,
-                insight_text,
-            ]
-        ),
-        limit=60,
+    trusted_search_text = " ".join(
+        [
+            unit["title"],
+            unit.get("project", ""),
+            unit["summary"],
+            operational_text,
+            insight_text,
+        ]
     )
+    unit["terms"] = extract_terms(trusted_search_text, limit=60)
+    normalized_search_text = re.sub(
+        r"\s+",
+        " ",
+        trusted_search_text.casefold(),
+    )
+    for term in supplied_terms:
+        term = str(term or "").strip()
+        if (
+            term
+            and term.casefold() in normalized_search_text
+            and term not in unit["terms"]
+        ):
+            unit["terms"].append(term)
     return unit
+
+
+def memory_generation_id(notes, recall_index):
+    """Bind one recall index and graph to the same deterministic Vault snapshot."""
+    note_snapshot = [
+        {
+            "path": str(note.get("path") or ""),
+            "title": str(note.get("title") or ""),
+            "type": str(note.get("type") or ""),
+            "project": str(note.get("project") or ""),
+            "date": str((note.get("frontmatter") or {}).get("date") or ""),
+            "links": sorted(str(link) for link in note.get("links") or []),
+        }
+        for note in notes or []
+        if is_indexable_note(note)
+    ]
+    payload = {
+        "notes": sorted(note_snapshot, key=lambda item: item["path"]),
+        "units": recall_index.get("units") or [],
+        "experience_bundles": recall_index.get("experience_bundles") or [],
+        "conversation_summaries": (
+            recall_index.get("conversation_summaries") or []
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def graph_source_revision(kind, payload):
+    """Hash the behavior-affecting state of a non-memory graph source."""
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "kind": str(kind or ""),
+                "payload": payload,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def make_recall_unit(unit_type, title, content, path, project, date, source_note):
@@ -699,67 +1081,294 @@ def make_recall_unit(unit_type, title, content, path, project, date, source_note
 
 def build_memory_graph(notes, recall_index):
     nodes = {}
-    edges = []
+    edges = {}
+    generation_id = str(recall_index.get("generation_id") or "")
+    if not generation_id:
+        generation_id = memory_generation_id(notes, recall_index)
 
     for note in notes:
         if not is_indexable_note(note):
             continue
         note_id = f"note:{note['path']}"
-        add_node(nodes, note_id, note["type"], note["title"], note["path"], note.get("project", ""))
+        note_revision = graph_source_revision(
+            "note",
+            {
+                "path": note.get("path", ""),
+                "type": note.get("type", ""),
+                "title": note.get("title", ""),
+                "project": note.get("project", ""),
+                "date": str(
+                    (note.get("frontmatter") or {}).get("date") or ""
+                ),
+                "links": sorted(str(link) for link in note.get("links") or []),
+            },
+        )
+        add_node(
+            nodes,
+            note_id,
+            "note",
+            note.get("type") or "note",
+            note["title"],
+            note["path"],
+            note.get("project", ""),
+            date=(note.get("frontmatter") or {}).get("date", ""),
+            revision=note_revision,
+            source_refs=[note_id],
+        )
         if note.get("project"):
             project_id = f"project:{note['project']}"
-            add_node(nodes, project_id, "project", note["project"], "", note["project"])
-            add_edge(edges, note_id, project_id, "belongs_to")
+            add_node(
+                nodes,
+                project_id,
+                "project",
+                "project",
+                note["project"],
+                "",
+                note["project"],
+                source_refs=[note_id],
+            )
+            add_edge(
+                edges,
+                nodes,
+                note_id,
+                project_id,
+                "belongs_to",
+                source_ref=note_id,
+                source_revision=note_revision,
+                observed_at=(note.get("frontmatter") or {}).get("date", ""),
+                derivation="note-frontmatter",
+            )
         for link in note.get("links", []):
             target_id = f"note:{link}"
-            add_node(nodes, target_id, "note-ref", os.path.basename(link), link, "")
-            add_edge(edges, note_id, target_id, "links_to")
+            add_node(
+                nodes,
+                target_id,
+                "note",
+                "reference",
+                os.path.basename(link),
+                link,
+                "",
+                source_refs=[note_id],
+                resolved=False,
+            )
+            add_edge(
+                edges,
+                nodes,
+                note_id,
+                target_id,
+                "links_to",
+                source_ref=note_id,
+                source_revision=note_revision,
+                observed_at=(note.get("frontmatter") or {}).get("date", ""),
+                derivation="wikilink",
+            )
 
-    for unit in recall_index.get("units", []):
+    units = [
+        unit
+        for unit in recall_index.get("units", [])
+        if not is_error_evidence_candidate_path(unit.get("path"))
+    ]
+    units_by_id = {
+        unit.get("id"): unit
+        for unit in units
+        if isinstance(unit, dict) and unit.get("id")
+    }
+    for unit in units:
         if is_error_evidence_candidate_path(unit.get("path")):
             continue
+        source_note = unit.get("source_note")
         add_node(
             nodes,
             unit["id"],
+            "memory",
             unit["type"],
             unit["title"],
             unit.get("path", ""),
             unit.get("project", ""),
+            date=unit.get("date", ""),
+            revision=unit.get("revision", ""),
+            source_refs=memory_graph_source_refs(unit),
         )
-        source_note = unit.get("source_note")
         if source_note and source_note != unit["id"]:
-            add_edge(edges, unit["id"], source_note, "recorded_in")
+            if source_note not in nodes:
+                add_node(
+                    nodes,
+                    source_note,
+                    "note",
+                    "reference",
+                    source_note.removeprefix("note:"),
+                    source_note.removeprefix("note:"),
+                    unit.get("project", ""),
+                    source_refs=[source_note],
+                    resolved=False,
+                )
+            add_edge(
+                edges,
+                nodes,
+                unit["id"],
+                source_note,
+                "recorded_in",
+                source_ref=source_note,
+                source_revision=unit.get("revision", ""),
+                observed_at=unit.get("date", ""),
+                derivation="formal-record",
+            )
         if unit.get("project"):
             project_id = f"project:{unit['project']}"
-            add_node(nodes, project_id, "project", unit["project"], "", unit["project"])
-            add_edge(edges, unit["id"], project_id, "belongs_to")
-        for dependency in unit.get("requires") or []:
-            add_edge(edges, unit["id"], dependency, "depends_on")
-        if unit.get("type") == "insight":
-            add_insight_graph_relations(nodes, edges, unit)
+            add_node(
+                nodes,
+                project_id,
+                "project",
+                "project",
+                unit["project"],
+                "",
+                unit["project"],
+                source_refs=unit.get("source_refs"),
+            )
+            add_edge(
+                edges,
+                nodes,
+                unit["id"],
+                project_id,
+                "belongs_to",
+                source_ref=source_note or unit["id"],
+                source_revision=unit.get("revision", ""),
+                observed_at=unit.get("date", ""),
+                derivation="formal-record",
+            )
 
-    units_by_id = {
-        unit.get("id"): unit
-        for unit in recall_index.get("units", [])
-        if isinstance(unit, dict) and unit.get("id")
-    }
+    for unit in units:
+        for dependency in unit.get("requires") or []:
+            target = units_by_id.get(dependency)
+            if target:
+                add_node(
+                    nodes,
+                    target["id"],
+                    "memory",
+                    target["type"],
+                    target["title"],
+                    target.get("path", ""),
+                    target.get("project", ""),
+                    date=target.get("date", ""),
+                    revision=target.get("revision", ""),
+                    source_refs=memory_graph_source_refs(target),
+                )
+            else:
+                add_node(
+                    nodes,
+                    dependency,
+                    "memory",
+                    "reference",
+                    dependency,
+                    "",
+                    unit.get("project", ""),
+                    source_refs=[unit.get("source_note") or unit["id"]],
+                    resolved=False,
+                )
+            add_edge(
+                edges,
+                nodes,
+                unit["id"],
+                dependency,
+                "depends_on",
+                source_ref=unit.get("source_note") or unit["id"],
+                source_revision=unit.get("revision", ""),
+                observed_at=unit.get("date", ""),
+                derivation="formal-record",
+            )
+        superseded_by = unit.get("superseded_by")
+        if superseded_by:
+            target = units_by_id.get(superseded_by)
+            if target:
+                add_node(
+                    nodes,
+                    target["id"],
+                    "memory",
+                    target["type"],
+                    target["title"],
+                    target.get("path", ""),
+                    target.get("project", ""),
+                    date=target.get("date", ""),
+                    revision=target.get("revision", ""),
+                    source_refs=memory_graph_source_refs(target),
+                )
+            else:
+                add_node(
+                    nodes,
+                    superseded_by,
+                    "memory",
+                    "reference",
+                    superseded_by,
+                    "",
+                    unit.get("project", ""),
+                    source_refs=[unit.get("source_note") or unit["id"]],
+                    resolved=False,
+                )
+            add_edge(
+                edges,
+                nodes,
+                unit["id"],
+                superseded_by,
+                "superseded_by",
+                source_ref=unit.get("source_note") or unit["id"],
+                source_revision=unit.get("revision", ""),
+                observed_at=unit.get("date", ""),
+                derivation="formal-record",
+            )
+        add_declared_memory_relations(nodes, edges, unit, units_by_id)
+        if unit.get("type") == "insight":
+            add_insight_graph_relations(nodes, edges, unit, units_by_id)
+
     for bundle in recall_index.get("experience_bundles") or []:
         if not isinstance(bundle, dict) or not bundle.get("id"):
             continue
         project = str(bundle.get("project") or "")
         session_ref = str(bundle.get("session_ref") or "")
+        bundle_revision = graph_source_revision(
+            "experience",
+            {
+                "id": bundle.get("id", ""),
+                "project": project,
+                "session_ref": session_ref,
+                "date": bundle.get("date", ""),
+                "members": bundle.get("members") or [],
+            },
+        )
         add_node(
             nodes,
             bundle["id"],
             "experience",
+            "session-bundle",
             f"{project}: {session_ref.removeprefix('session:')}",
             "",
             project,
+            date=bundle.get("date", ""),
+            revision=bundle_revision,
+            source_refs=[session_ref],
         )
         if project:
             project_id = f"project:{project}"
-            add_node(nodes, project_id, "project", project, "", project)
-            add_edge(edges, bundle["id"], project_id, "belongs_to")
+            add_node(
+                nodes,
+                project_id,
+                "project",
+                "project",
+                project,
+                "",
+                project,
+                source_refs=[session_ref],
+            )
+            add_edge(
+                edges,
+                nodes,
+                bundle["id"],
+                project_id,
+                "belongs_to",
+                source_ref=session_ref,
+                source_revision=bundle_revision,
+                observed_at=bundle.get("date", ""),
+                derivation="experience-bundle",
+            )
         for member in bundle.get("members") or []:
             if not isinstance(member, dict):
                 continue
@@ -769,15 +1378,41 @@ def build_memory_graph(notes, recall_index):
                 and unit.get("revision") == member.get("revision")
                 and unit.get("project") == project
             ):
-                add_edge(edges, unit["id"], bundle["id"], "part_of_experience")
+                add_edge(
+                    edges,
+                    nodes,
+                    unit["id"],
+                    bundle["id"],
+                    "part_of_experience",
+                    source_ref=session_ref,
+                    source_revision=unit.get("revision", ""),
+                    observed_at=member.get("date", ""),
+                    derivation="experience-bundle",
+                )
 
-    return {
-        "schema_version": RUNTIME_SCHEMA_VERSION,
+    graph = {
+        "schema_version": GRAPH_SCHEMA_VERSION,
         "generated_by": "knowledge_index.py",
         "generated_at": datetime.now(CST).isoformat(),
-        "nodes": list(nodes.values()),
-        "edges": sorted(edges, key=lambda item: (item["source"], item["relation"], item["target"])),
+        "generation_id": generation_id,
+        "nodes": sorted(nodes.values(), key=lambda item: item["id"]),
+        "edges": sorted(
+            edges.values(),
+            key=lambda item: (item["source"], item["relation"], item["target"]),
+        ),
     }
+    graph["quality"] = analyze_memory_graph(
+        graph,
+        units,
+        expected_generation_id=generation_id,
+    )
+    validate_memory_graph(
+        graph,
+        units,
+        allow_legacy=False,
+        expected_generation_id=generation_id,
+    )
+    return graph
 
 
 def is_indexable_note(note):
@@ -798,6 +1433,12 @@ def is_indexable_note(note):
 DEFAULT_ERROR_EVIDENCE_DIR = "04-Feedback/_error-candidates"
 DEFAULT_INSIGHT_CANDIDATE_DIR = "04-Feedback/_insight-candidates"
 DEFAULT_PROMOTION_PROPOSAL_DIR = "04-Feedback/_promotion-proposals"
+ADAPTIVE_CANDIDATE_DIRS = (
+    ("personal_memory", "04-Feedback/_memory-candidates"),
+    ("skill_preferences", "04-Feedback/_skill-preferences"),
+    ("workflow_memory", "04-Feedback/_workflow-candidates"),
+    ("insight_memory", DEFAULT_INSIGHT_CANDIDATE_DIR),
+)
 
 
 def error_evidence_candidate_roots(cfg):
@@ -825,16 +1466,21 @@ def is_error_evidence_candidate_path(path, candidate_roots=None):
     return False
 
 
-def insight_candidate_roots(cfg):
+def adaptive_candidate_roots(cfg):
+    """Return every configured adaptive candidate root plus its default."""
     vault = cfg.get("vault_path")
-    raw = (cfg.get("insight_memory") or {}).get(
-        "candidate_dir",
-        DEFAULT_INSIGHT_CANDIDATE_DIR,
-    )
-    candidate = safe_vault_path(vault, raw)
-    assert_no_symlink_components(candidate, vault)
-    relative = os.path.relpath(candidate, vault).replace(os.sep, "/")
-    return tuple(dict.fromkeys((relative, DEFAULT_INSIGHT_CANDIDATE_DIR)))
+    roots = []
+    for section, default in ADAPTIVE_CANDIDATE_DIRS:
+        raw = (cfg.get(section) or {}).get("candidate_dir", default)
+        candidate = safe_vault_path(vault, raw)
+        assert_no_symlink_components(candidate, vault)
+        roots.extend(
+            (
+                os.path.relpath(candidate, vault).replace(os.sep, "/"),
+                default,
+            )
+        )
+    return tuple(dict.fromkeys(roots))
 
 
 def promotion_proposal_roots(cfg):
@@ -976,52 +1622,162 @@ def compact_text(text, limit):
     return text[: limit - 1].rstrip() + "…"
 
 
-def add_node(nodes, node_id, node_type, label, path, project):
-    existing = nodes.get(node_id)
-    if existing and not (
-        existing.get("type") == "note-ref" and node_type != "note-ref"
-    ):
-        return
-    nodes[node_id] = {
-        "id": node_id,
-        "type": node_type,
-        "label": str(label or node_id)[:160],
-        "path": path or "",
-        "project": project or "",
-    }
+def add_node(
+    nodes,
+    node_id,
+    node_type,
+    kind,
+    label,
+    path,
+    project,
+    *,
+    date="",
+    revision="",
+    source_refs=None,
+    resolved=True,
+):
+    upsert_graph_node(
+        nodes,
+        graph_node(
+            node_id,
+            node_type,
+            kind,
+            label,
+            path=path,
+            project=project,
+            date=date,
+            revision=revision,
+            source_refs=source_refs,
+            resolved=resolved,
+        ),
+    )
 
 
-def add_edge(edges, source, target, relation):
-    edge = {"source": source, "target": target, "relation": relation}
-    if edge not in edges:
-        edges.append(edge)
+def memory_graph_source_refs(unit):
+    """Include the formal note locator in derived graph provenance."""
+    refs = list(unit.get("source_refs") or [])
+    source_note = str(unit.get("source_note") or "")
+    if source_note and source_note not in refs:
+        refs.append(source_note)
+    return refs
 
 
-def add_insight_graph_relations(nodes, edges, unit):
+def add_edge(
+    edges,
+    nodes,
+    source,
+    target,
+    relation,
+    *,
+    source_ref,
+    source_revision="",
+    observed_at="",
+    derivation,
+    confidence=1.0,
+):
+    add_graph_edge(
+        edges,
+        nodes,
+        source,
+        target,
+        relation,
+        graph_evidence(
+            source_ref,
+            source_revision=source_revision,
+            observed_at=observed_at,
+            derivation=derivation,
+        ),
+        confidence=confidence,
+    )
+
+
+def add_insight_graph_relations(nodes, edges, unit, units_by_id):
     source_refs = [
         source_ref
         for source_ref in dict.fromkeys(unit.get("source_refs") or [])
         if source_ref != unit.get("source_note")
     ]
     for index, source_ref in enumerate(source_refs):
-        add_node(nodes, source_ref, "source-ref", source_ref, "", "")
+        add_node(
+            nodes,
+            source_ref,
+            "source",
+            source_ref.partition(":")[0] or "source",
+            source_ref,
+            "",
+            "",
+            source_refs=[source_ref],
+        )
         relation = "derived_from" if index == 0 else "reinforced_by"
-        add_edge(edges, unit["id"], source_ref, relation)
+        add_edge(
+            edges,
+            nodes,
+            unit["id"],
+            source_ref,
+            relation,
+            source_ref=source_ref,
+            source_revision=unit.get("revision", ""),
+            observed_at=unit.get("date", ""),
+            derivation="insight-metadata",
+        )
 
     for transfer in unit.get("transfer") or []:
         target = concept_node_id(transfer)
-        add_node(nodes, target, "concept", transfer, "", unit.get("project", ""))
-        add_edge(edges, unit["id"], target, "applies_to")
+        add_node(
+            nodes,
+            target,
+            "concept",
+            "transfer",
+            transfer,
+            "",
+            unit.get("project", ""),
+            source_refs=[unit.get("source_note") or unit["id"]],
+        )
+        add_edge(
+            edges,
+            nodes,
+            unit["id"],
+            target,
+            "applies_to",
+            source_ref=unit.get("source_note") or unit["id"],
+            source_revision=unit.get("revision", ""),
+            observed_at=unit.get("date", ""),
+            derivation="insight-metadata",
+        )
 
-    relation_types = {
-        "supports": "memory-ref",
-        "operationalized_as": "memory-ref",
-        "related_to": "insight-ref",
-    }
-    for relation, node_type in relation_types.items():
+def add_declared_memory_relations(nodes, edges, unit, units_by_id):
+    """Derive only explicitly declared, revision-bound memory relations."""
+    for relation in MEMORY_RELATION_FIELDS:
         for target in unit.get(relation) or []:
-            add_node(nodes, target, node_type, target, "", "")
-            add_edge(edges, unit["id"], target, relation)
+            target_unit = units_by_id.get(target)
+            add_node(
+                nodes,
+                target,
+                "memory",
+                target_unit.get("type", "reference") if target_unit else "reference",
+                target_unit.get("title", target) if target_unit else target,
+                target_unit.get("path", "") if target_unit else "",
+                target_unit.get("project", "") if target_unit else "",
+                date=target_unit.get("date", "") if target_unit else "",
+                revision=target_unit.get("revision", "") if target_unit else "",
+                source_refs=(
+                    memory_graph_source_refs(target_unit)
+                    if target_unit
+                    else [unit.get("source_note") or unit["id"]]
+                ),
+                resolved=bool(target_unit),
+            )
+            add_edge(
+                edges,
+                nodes,
+                unit["id"],
+                target,
+                relation,
+                source_ref=unit.get("source_note") or unit["id"],
+                source_revision=unit.get("revision", ""),
+                observed_at=unit.get("date", ""),
+                derivation="formal-record",
+            )
 
 
 def concept_node_id(value):

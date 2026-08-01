@@ -32,6 +32,35 @@ from insight_memory import render_formal_record
 
 
 class MemoryQualityAuditTests(unittest.TestCase):
+    def test_approval_source_digest_binds_declared_semantic_relations(self):
+        base = normalize_formal_record(
+            {
+                "id": "decision-digest-relations",
+                "text": "审批 digest 必须覆盖语义关系",
+                "context": "防止计划生成后静默替换关系",
+                "project": "demo",
+                "scope": "project",
+                "source_refs": ["session:digest-relations"],
+                "supports": ["workflow-original"],
+            },
+            memory_type="decision",
+        )
+        changed = normalize_formal_record(
+            {
+                **base,
+                "supports": ["workflow-changed"],
+            },
+            memory_type="decision",
+        )
+        changed["revision"] = base["revision"]
+        original_location = mock.Mock(record=base)
+        changed_location = mock.Mock(record=changed)
+
+        self.assertNotEqual(
+            memory_quality_audit._approval_source_digest(original_location),
+            memory_quality_audit._approval_source_digest(changed_location),
+        )
+
     def test_formal_insight_participates_in_revision_and_source_quality_audit(self):
         with tempfile.TemporaryDirectory() as vault:
             cfg = fixture_config(vault)

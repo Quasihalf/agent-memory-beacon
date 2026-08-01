@@ -11,6 +11,7 @@ import yaml
 from memory_authority import render_authority_markdown_lines
 from memory_lifecycle import create_proposal
 from memory_schema import (
+    MEMORY_RELATION_FIELDS,
     RUNTIME_SCHEMA_VERSION,
     active_formal_lifecycle_metadata,
     canonical_project,
@@ -338,6 +339,7 @@ def parse_learn_annotation(raw, user_messages, default_project):
             fields.get("operationalized_as", "")
         ),
         "related_to": split_memory_ids(fields.get("related_to", "")),
+        "contradicts": split_memory_ids(fields.get("contradicts", "")),
     }
 
 
@@ -563,7 +565,7 @@ def render_formal_record(record, lifecycle=None):
             f"- source_refs: {render_code_list(formal['source_refs'])}",
         ]
     )
-    for key in ("supports", "operationalized_as", "related_to"):
+    for key in MEMORY_RELATION_FIELDS:
         if formal.get(key):
             lines.append(f"- {key}: {render_code_list(formal[key])}")
     lines.extend(["", "### Insight", "", formal["summary"]])

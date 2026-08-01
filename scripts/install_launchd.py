@@ -97,7 +97,10 @@ def base_plist(
         "ProgramArguments": arguments,
         "WorkingDirectory": str(scripts_dir),
         "ProcessType": process_type,
-        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+        "EnvironmentVariables": {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONUNBUFFERED": "1",
+        },
         "StandardOutPath": str(log_dir / f"{label}.log"),
         "StandardErrorPath": str(log_dir / f"{label}.error.log"),
     }

@@ -1,7 +1,393 @@
 {
-  "schema_version": "2.0",
+  "schema_version": "3.0",
   "generated_by": "memory-runtime-fixture",
-  "generated_at": "2026-07-13T00:00:00+08:00",
-  "nodes": [],
-  "edges": []
+  "generated_at": "2026-07-26T00:00:00+08:00",
+  "generation_id": "runtime-fixture-graph-v3",
+  "nodes": [
+    {
+      "id": "workflow:pensive",
+      "type": "memory",
+      "kind": "workflow",
+      "label": "pensive_review_then_fix",
+      "path": "05-Agent-Memory/workflow-rules",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "a8f144a87d9e38a3ffc50dda03df24a1746eead7b5b918f311a026d1137dc8eb",
+      "source_refs": [
+        "note:05-Agent-Memory/workflow-rules"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "workflow:github",
+      "type": "memory",
+      "kind": "workflow",
+      "label": "github_source_first",
+      "path": "05-Agent-Memory/workflow-rules",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "5ff662ada62f91f782e132317a8d9a98ae7372fa50d960b0a37896009c60e5dd",
+      "source_refs": [
+        "note:05-Agent-Memory/workflow-rules"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "preference:chinese",
+      "type": "memory",
+      "kind": "preference",
+      "label": "复杂审查默认使用中文",
+      "path": "05-Agent-Memory/personal-memory",
+      "project": "",
+      "date": "2026-07-13",
+      "revision": "7c23da7a5a464bbe7efaaab74ee89bf6b3030364304d3beb1513b496e96a7435",
+      "source_refs": [
+        "note:05-Agent-Memory/personal-memory"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "skill:humanizer",
+      "type": "memory",
+      "kind": "skill",
+      "label": "humanizer",
+      "path": "05-Agent-Memory/skill-routing-rules",
+      "project": "",
+      "date": "2026-07-13",
+      "revision": "f3ee65c32a6b7aa51c97bb7cd21b06d5b5fee81d5dba5259ccf9860676f64ff3",
+      "source_refs": [
+        "note:05-Agent-Memory/skill-routing-rules"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "decision:formal-index",
+      "type": "memory",
+      "kind": "decision",
+      "label": "动态召回只读取正式索引",
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "059800f1f25f69737eef2fa854f433eaaa968d5be72934b16060edb3de524fd5",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/decisions"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "error:path",
+      "type": "memory",
+      "kind": "error",
+      "label": "path-filesystem",
+      "path": "01-Projects/agent-memory-beacon/Memory/pitfalls",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "80491e2fb76f199839a3c2e2c739aa9626d208cab40f759581f453da8e51cf70",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/pitfalls"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "error:reconnect",
+      "type": "memory",
+      "kind": "error",
+      "label": "api-network",
+      "path": "01-Projects/agent-memory-beacon/Memory/pitfalls",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "2d9970b6869e87a49f448283dff4aabf60b722fbebebfeacee4efd6a22f8a789",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/pitfalls"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "decision:tcad",
+      "type": "memory",
+      "kind": "decision",
+      "label": "Sentaurus 使用远程 Linux 服务器",
+      "path": "01-Projects/tcad/Memory/decisions",
+      "project": "tcad",
+      "date": "2026-07-13",
+      "revision": "5464388c8dc171b34679783cdab5dd53d9b3799c26831f5aa45f5e5aad2c975c",
+      "source_refs": [
+        "note:01-Projects/tcad/Memory/decisions"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "error:tcad-license",
+      "type": "memory",
+      "kind": "error",
+      "label": "other",
+      "path": "01-Projects/tcad/Memory/pitfalls",
+      "project": "tcad",
+      "date": "2026-07-13",
+      "revision": "9840f0c6fea90346ae52620a8e6e75b676968c935d93b9ab95146e696c4a3313",
+      "source_refs": [
+        "note:01-Projects/tcad/Memory/pitfalls"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "workflow:tcad-remote",
+      "type": "memory",
+      "kind": "workflow",
+      "label": "tcad_remote_linux",
+      "path": "05-Agent-Memory/workflow-rules",
+      "project": "tcad",
+      "date": "2026-07-13",
+      "revision": "709f375d1e1ce72589641852c6605999987d581363b320441aa891e53f3ce649",
+      "source_refs": [
+        "note:05-Agent-Memory/workflow-rules"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "decision:notes",
+      "type": "memory",
+      "kind": "decision",
+      "label": "统计笔记数量",
+      "path": "01-Projects/notes-counter/Memory/decisions",
+      "project": "notes-counter",
+      "date": "2026-07-13",
+      "revision": "8754fdf53bd03456793a43d3fd43851106ca89a84dd5f58d759811c7eeca5d61",
+      "source_refs": [
+        "note:01-Projects/notes-counter/Memory/decisions"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "decision:candidate-lure",
+      "type": "memory",
+      "kind": "decision",
+      "label": "候选诱饵",
+      "path": "04-Feedback/_memory-candidates/lure",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "17a478762fc5f0c32b05d70337ac2bf6eacd5bcf958bebce005109b65336b82e",
+      "source_refs": [
+        "note:04-Feedback/_memory-candidates/lure"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "decision:session-lure",
+      "type": "memory",
+      "kind": "decision",
+      "label": "Session 诱饵",
+      "path": "01-Projects/agent-memory-beacon/Memory/sessions/lure",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "6ff68180bbc269fb42718f19b10b24c8af514c1766035d176243490d62788011",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/sessions/lure"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "decision:fresh",
+      "type": "memory",
+      "kind": "decision",
+      "label": "长任务中新晋升记忆",
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "c25ae138daaeb168b1f04817ffe742aa166e7d15757724c3552237f3a36ef9c9",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/decisions"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "decision:editable",
+      "type": "memory",
+      "kind": "decision",
+      "label": "可更新的长期记忆",
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "cd512f8b54dd7bf1bd7b42257807bc50128742a33f8b325b58531abfa7bc9276",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/decisions"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "decision:deletable",
+      "type": "memory",
+      "kind": "decision",
+      "label": "可删除的长期记忆",
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-13",
+      "revision": "30977e42dffd835660bb4a61fd2318a62c7c707c3b386a66cfd24bc36348bafb",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/decisions"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "insight:fusion-seed",
+      "type": "memory",
+      "kind": "insight",
+      "label": "互补弱通道通过融合形成稳定系统",
+      "path": "05-Agent-Memory/insights",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-22",
+      "revision": "f5ea6fadc88b201651a6b427976901811144bce7eb077f40c5d7618414aa2326",
+      "source_refs": [
+        "note:05-Agent-Memory/insights",
+        "session:fixture-insight-a"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "insight:animation-reinforced",
+      "type": "memory",
+      "kind": "insight",
+      "label": "分层时间轴控制动画节奏",
+      "path": "05-Agent-Memory/insights",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-22",
+      "revision": "1e8283b3b0406ce2e7e8b9e6a697410e4506df86a7aba0afb2a35827d30a055d",
+      "source_refs": [
+        "note:05-Agent-Memory/insights",
+        "session:fixture-insight-a",
+        "session:fixture-insight-b"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "insight:candidate-lure",
+      "type": "memory",
+      "kind": "insight",
+      "label": "insight:candidate-lure",
+      "path": "04-Feedback/_insight-candidates/private",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-22",
+      "revision": "9df6065e3db415d420a86281ae2e2694b30a1a143e14e84aeeca183be323ce07",
+      "source_refs": [
+        "note:04-Feedback/_insight-candidates/private",
+        "session:fixture-lure"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "insight:assistant-lure",
+      "type": "memory",
+      "kind": "insight",
+      "label": "insight:assistant-lure",
+      "path": "05-Agent-Memory/insights",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-22",
+      "revision": "9d78cba4e1553861172d003d102752d91c5174827b37503d4642b2ed5e7c03c7",
+      "source_refs": [
+        "note:05-Agent-Memory/insights",
+        "session:fixture-lure"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "decision:graph-release-anchor",
+      "type": "memory",
+      "kind": "decision",
+      "label": "Graph v3 发布关系锚点",
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-26",
+      "revision": "67313efb51255d25a3c14a0fa5d52eee07c011d4adea5a61171edceb97c7075d",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/decisions"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "workflow:graph-release-one-hop",
+      "type": "memory",
+      "kind": "workflow",
+      "label": "验证 Graph v3 一跳关系",
+      "path": "05-Agent-Memory/workflow-rules",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-26",
+      "revision": "de0b9aca713c814beb032148fe72ff210efd7f453e09435b8879fe0e13d1bafe",
+      "source_refs": [
+        "note:05-Agent-Memory/workflow-rules"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "error:graph-release-two-hop",
+      "type": "memory",
+      "kind": "error",
+      "label": "验证 Graph v3 两跳关系",
+      "path": "01-Projects/agent-memory-beacon/Memory/pitfalls",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-26",
+      "revision": "e91d49a8a5c8ff7612395280f0acf612a5b6880c70bcb1617e412d1ce341e95e",
+      "source_refs": [
+        "note:01-Projects/agent-memory-beacon/Memory/pitfalls"
+      ],
+      "resolved": true
+    },
+    {
+      "id": "workflow:graph-release-low-confidence",
+      "type": "memory",
+      "kind": "workflow",
+      "label": "拒绝低置信图关系",
+      "path": "05-Agent-Memory/workflow-rules",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-26",
+      "revision": "974af83c24180fd77a18ad27dbea8c46a927295c7593f62a58f3235979adeb6d",
+      "source_refs": [
+        "note:05-Agent-Memory/workflow-rules"
+      ],
+      "resolved": true
+    }
+  ],
+  "edges": [
+    {
+      "source": "decision:graph-release-anchor",
+      "target": "workflow:graph-release-one-hop",
+      "relation": "depends_on",
+      "confidence": 1,
+      "evidence": [
+        {
+          "source_ref": "note:01-Projects/agent-memory-beacon/Memory/decisions",
+          "source_revision": "67313efb51255d25a3c14a0fa5d52eee07c011d4adea5a61171edceb97c7075d",
+          "observed_at": "2026-07-26",
+          "derivation": "runtime-fixture"
+        }
+      ]
+    },
+    {
+      "source": "workflow:graph-release-one-hop",
+      "target": "error:graph-release-two-hop",
+      "relation": "depends_on",
+      "confidence": 1,
+      "evidence": [
+        {
+          "source_ref": "note:05-Agent-Memory/workflow-rules",
+          "source_revision": "de0b9aca713c814beb032148fe72ff210efd7f453e09435b8879fe0e13d1bafe",
+          "observed_at": "2026-07-26",
+          "derivation": "runtime-fixture"
+        }
+      ]
+    },
+    {
+      "source": "decision:graph-release-anchor",
+      "target": "workflow:graph-release-low-confidence",
+      "relation": "depends_on",
+      "confidence": 0.49,
+      "evidence": [
+        {
+          "source_ref": "note:01-Projects/agent-memory-beacon/Memory/decisions",
+          "source_revision": "67313efb51255d25a3c14a0fa5d52eee07c011d4adea5a61171edceb97c7075d",
+          "observed_at": "2026-07-26",
+          "derivation": "runtime-fixture"
+        }
+      ]
+    }
+  ]
 }

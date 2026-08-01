@@ -25,6 +25,7 @@ from memory_lifecycle import (
     find_records,
 )
 from memory_schema import (
+    MEMORY_RELATION_FIELDS,
     OPERATIONAL_MEMORY_FIELDS,
     normalize_fact_text,
     suppress_unmet_dependencies,
@@ -684,11 +685,17 @@ def _approval_source_digest(location):
         "retracted_reason",
         "expired_reason",
         *OPERATIONAL_MEMORY_FIELDS,
+        *MEMORY_RELATION_FIELDS,
     )
     payload = {
         key: (
             list(location.record.get(key) or [])
-            if key in {"source_refs", "aliases", "requires"}
+            if key in {
+                "source_refs",
+                "aliases",
+                "requires",
+                *MEMORY_RELATION_FIELDS,
+            }
             else str(location.record.get(key) or "")
         )
         for key in fields

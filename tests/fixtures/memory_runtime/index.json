@@ -2,7 +2,8 @@
   "schema_version": "2.0",
   "generated_by": "memory-runtime-fixture",
   "generated_at": "2026-07-13T00:00:00+08:00",
-  "unit_count": 20,
+  "generation_id": "runtime-fixture-graph-v3",
+  "unit_count": 24,
   "units": [
     {
       "id": "workflow:pensive",
@@ -472,6 +473,126 @@
       "confidence": 0.76,
       "recall_summary": "fusioninsightprobe 伪造启发不得进入运行时",
       "terms": ["fusioninsightprobe", "伪造", "启发"]
+    },
+    {
+      "id": "decision:graph-release-anchor",
+      "revision": "67313efb51255d25a3c14a0fa5d52eee07c011d4adea5a61171edceb97c7075d",
+      "type": "decision",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "Graph v3 发布关系锚点",
+      "summary": "graphreleaseprobe 图关系锚点用于验证发布评测",
+      "date": "2026-07-26",
+      "source_refs": ["note:01-Projects/agent-memory-beacon/Memory/decisions"],
+      "aliases": [],
+      "path": "01-Projects/agent-memory-beacon/Memory/decisions",
+      "source_note": "note:01-Projects/agent-memory-beacon/Memory/decisions",
+      "requires": [
+        "workflow:graph-release-low-confidence",
+        "workflow:graph-release-one-hop"
+      ],
+      "recall_summary": "graphreleaseprobe 图关系锚点用于验证发布评测",
+      "terms": ["graphreleaseprobe", "图关系", "锚点", "发布", "评测"]
+    },
+    {
+      "id": "workflow:graph-release-one-hop",
+      "revision": "de0b9aca713c814beb032148fe72ff210efd7f453e09435b8879fe0e13d1bafe",
+      "type": "workflow",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "验证 Graph v3 一跳关系",
+      "summary": "显式 supports 关系应在运行时召回一跳目标",
+      "date": "2026-07-26",
+      "source_refs": ["note:05-Agent-Memory/workflow-rules"],
+      "aliases": [],
+      "path": "05-Agent-Memory/workflow-rules",
+      "source_note": "note:05-Agent-Memory/workflow-rules",
+      "requires": [
+        "error:graph-release-two-hop"
+      ],
+      "recall_summary": "显式 supports 关系应在运行时召回一跳目标",
+      "terms": ["graph", "一跳", "supports", "关系", "召回"]
+    },
+    {
+      "id": "error:graph-release-two-hop",
+      "revision": "e91d49a8a5c8ff7612395280f0acf612a5b6880c70bcb1617e412d1ce341e95e",
+      "type": "error",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "验证 Graph v3 两跳关系",
+      "summary": "revision 绑定的两跳关系应保留且不超过边界",
+      "date": "2026-07-26",
+      "source_refs": ["note:01-Projects/agent-memory-beacon/Memory/pitfalls"],
+      "aliases": [],
+      "path": "01-Projects/agent-memory-beacon/Memory/pitfalls",
+      "source_note": "note:01-Projects/agent-memory-beacon/Memory/pitfalls",
+      "recall_summary": "revision 绑定的两跳关系应保留且不超过边界",
+      "terms": ["graph", "两跳", "revision", "关系", "边界"]
+    },
+    {
+      "id": "workflow:graph-release-low-confidence",
+      "revision": "974af83c24180fd77a18ad27dbea8c46a927295c7593f62a58f3235979adeb6d",
+      "type": "workflow",
+      "status": "active",
+      "project": "agent-memory-beacon",
+      "scope": "project",
+      "title": "拒绝低置信图关系",
+      "summary": "低于语义边阈值的关系不得进入召回",
+      "date": "2026-07-26",
+      "source_refs": ["note:05-Agent-Memory/workflow-rules"],
+      "aliases": [],
+      "path": "05-Agent-Memory/workflow-rules",
+      "source_note": "note:05-Agent-Memory/workflow-rules",
+      "recall_summary": "低于语义边阈值的关系不得进入召回",
+      "terms": ["低置信", "语义边", "阈值", "关系", "召回"]
     }
-  ]
+  ],
+  "conversation_summaries": [
+    {
+      "id": "conversation_summary-4e51a0adb8dc2aa8",
+      "type": "conversation_summary",
+      "status": "active",
+      "session_id": "fixture-conversation-summary",
+      "summary_revision": "ff3b087615dd30be140aa557c16488da1a234baf08a0631e31b3888d789cb73a",
+      "project": "agent-memory-beacon",
+      "date": "2026-07-31",
+      "title": "滚动摘要运行时召回",
+      "source_note": "01-Projects/agent-memory-beacon/Memory/sessions/fixture-conversation-summary.md",
+      "current_goal": "完成 quartzcheckpoint 长对话摘要召回",
+      "topics": [
+        "quartzcheckpoint",
+        "滚动摘要"
+      ],
+      "progress": [
+        "已完成增量覆盖"
+      ],
+      "constraints": [
+        "正式记忆优先"
+      ],
+      "important_context": [
+        "摘要只走独立词法通道"
+      ],
+      "open_items": [
+        "完成发布验证"
+      ],
+      "summary": "quartzcheckpoint 保存长对话当前目标、进度和待办，供后续相关任务继续",
+      "search_terms": [
+        "完成",
+        "quartzcheckpoint",
+        "已完成增量覆盖",
+        "正式记忆优先",
+        "摘要只走独立词法通道",
+        "完成发布验证",
+        "保存长对话当前目标",
+        "长对话摘要召回",
+        "滚动摘要",
+        "进度和待办",
+        "供后续相关任务继续"
+      ]
+    }
+  ],
+  "conversation_summary_count": 1
 }

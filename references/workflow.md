@@ -52,13 +52,17 @@ v2.0 使用**内联格式**（inline），不再使用块格式（block）。AI 
 - `candidate`: 有潜在价值但不够确定，写入 `04-Feedback/_annotation-candidates/`。
 - `rejected`: 明确属于状态噪声或非记忆，不进入正式存储。
 
-每个独立耐久事实只写一个标签，不要用多条近义句重复记录。候选、rejected、历史 session 和非 active 正式记录都不会进入运行时召回。
+每个独立耐久事实只写一个标签，不要用多条近义句重复记录。候选、rejected、session 正文和非 active 正式记录都不会进入正式运行时召回；唯一例外是每个 session 的最新有界摘要可进入独立的低优先级 `CONTEXT` 通道。
 
 #### [LEARN] — 一次性启发与可迁移思路
 
 ```text
 [LEARN:<可复用原理>| novelty:<非显而易见之处>| transfer:<场景1,场景2>| boundary:<失效边界>| evidence:<用户原话>| source:user| project:<项目>| scope:<project|global>]
 ```
+
+仅当当前任务的 `[MEMORY_REFRESH]` 已显示准确稳定 ID 时，才可追加 `supports`、`operationalized_as` 或 `related_to`，多个 ID 用逗号分隔。看不到 ID 或语义关系不确定时省略；不得根据标题猜 ID，也不得为了图谱连线而创造关系。
+
+四种正式语义字段必须按含义使用：`supports` 表示 Source 对 Target 的明确支持，`operationalized_as` 表示 Source 被 Target 落实为执行机制，`contradicts` 表示同一边界内不能同时成立的明确冲突，`related_to` 只表示值得一起审阅的弱关联。前三者可在已有内容命中后参与图召回，`related_to` 只用于图谱和质量检查。`requires` 是硬依赖，不是普通连线。
 
 只有 Codex 主任务处理 LEARN。完整且来源可核验的首次启发可直接成为 `seed`；重复只把证据和 maturity 强化为 `reinforced`。不完整内容进入 `_insight-candidates/`，assistant-only 推测、敏感内容、普通事实和进度不会进入正式记忆。
 
@@ -114,6 +118,7 @@ Codex Memory 对比先运行能力 probe：
 |------|---------|---------|
 | Stop | Codex/Claude 会话结束 | 当前平台的当前 session |
 | SessionStart | Codex/Claude 新会话启动 | 48 小时内三端新增或变化的 session |
+| UserPromptSubmit | Codex 每条用户消息 | 动态记忆召回；到期时请求一条隐藏滚动摘要 |
 | harvest launchd | 默认每 300 秒 | 三端遗漏，重点覆盖 ZCode SQLite |
 | weekly launchd | `config.yaml` 指定星期和时间 | 五步深度管道 |
 
@@ -126,6 +131,40 @@ harvest job 使用 launchd `ProcessType=Standard`，保证短周期索引不会�
 每次成功提交并重建索引后，harvester 会刷新 `04-Feedback/memory-effectiveness.md` 和 `_promotion-proposals/`。两者失败只写 warning，不回滚已验证的正式记忆或 transcript cursor。每周 `maintainer.py` 会再次刷新；`--dry-run` 只预览建议，不写效果报告或候选文件。
 
 效果事件只含记忆 ID/revision、哈希任务身份、通道、耗时、估算 token 和反馈分类。转化建议只有在 Decision/Error/Workflow 满足独立来源或正向效果门槛时生成，且绑定当前 revision 和提案 digest。它们不是 formal memory，不进入 recall，也不会自动改源码、测试、Agent context 或正式记录。
+
+### 3.1 滚动会话摘要 / Rolling Conversation Summary
+
+默认调度规则：
+
+1. 只统计实质用户消息，短确认不计数。
+2. 第 5 条实质消息请求第一版摘要。
+3. 此后每 10 条实质消息刷新；若已过 30 分钟，则在下一条实质消息提前刷新。
+4. 两次请求至少间隔 2 条实质消息，避免失败后逐轮重试。
+5. 关闭 `conversation_summary.enabled` 后，不再请求或召回，但保留已有笔记。
+
+检查点指令要求当前 Codex 回答正常完成后写入不可见
+`AGENT_MEMORY_BEACON:ROLLING_SUMMARY_V1` 注释。不要手工把这个标记放进
+用户消息；harvester 只接受 assistant role、代码块外、严格字段和 4 KiB
+以内的版本。摘要必须概括目标、主题、进展、约束、重要上下文和未完成项，
+不得复制 prompt、凭据、命令输出或私有绝对路径。
+
+收割后可在对应 session 文件 frontmatter 核验：
+
+```yaml
+summary_mode: rolling
+summary_revision: <sha256>
+summary_updated_at: <timestamp>
+summary_source_cursor: file-bytes:<monotonic-offset>
+summary_checkpoint: <positive-sequence>
+```
+
+`## Session Summary` 只保留最新正文。验证派生状态时，检查
+`05-Agent-Memory/recall-index.json` 的 `conversation_summary_count` 和
+`conversation_summaries`；该记录不得出现在 `units`。用包含具体主题词的
+同项目 Codex 提问触发召回时，最多出现一个 `[CONTEXT]`，而泛化的“之前聊了
+什么”应保持静默。`[CONTEXT]` 不进入图谱、experience bundle、生命周期、
+AGENTS 编译或正式效果计数；运行时会明确声明它只是会话证据，不能覆盖当前
+用户指令或正式记忆。
 
 ## 四、深度扫描管道 / 4. Deep Scanner Pipeline (v2.0)
 
@@ -345,6 +384,27 @@ schema `2.0` 聚合记录是迁移后的权威来源，迁移器不会用 sessio
 
 执行器会把同一聚合文件中的多项变更合并后发布，并对整批只运行一次派生重建。成功回执、审批计划、精确匹配提案和 lifecycle audit 都绑定批准 SHA；任一写入、重建或后置验证失败会恢复源、派生索引、Agent context、计划和提案。没有新的精确 SHA 批准时只能生成或预览下一份计划，不能执行其中动作。
 
+### 4.6 旧记忆语义关系补全 / Legacy Semantic Relations
+
+旧记忆关系不能从相似度直接写入。先人工确认 Source、Relation、Target、理由和证据，再把候选保存为 JSON，依次执行：
+
+```bash
+.venv/bin/python memory_relation_batch.py plan \
+  --proposals-json /path/to/relation-proposals.json \
+  --output /path/to/vault/04-Feedback/_relation-proposals/semantic-plan.md
+
+.venv/bin/python memory_relation_batch.py preview \
+  --plan /path/to/vault/04-Feedback/_relation-proposals/semantic-plan.md \
+  --expected-sha256 <approved-canonical-sha256>
+
+.venv/bin/python memory_relation_batch.py apply \
+  --plan /path/to/vault/04-Feedback/_relation-proposals/semantic-plan.md \
+  --expected-sha256 <approved-canonical-sha256> \
+  --apply
+```
+
+`plan` 和 `preview` 都只读正式记忆。计划把每条边绑定到两端当前 revision、稳定 locator、规范 digest 和证据；只有用户明确批准完整 Canonical SHA256 后才能运行 `apply`。执行中任一派生重建失败会恢复源文件、计划和所有相关索引。应用后必须重跑 Doctor，并确认图质量报告中没有非法边、过期 revision 或缺失证据。
+
 ---
 
 ## 五、常见问题排查 / 5. Troubleshooting
@@ -474,3 +534,140 @@ RUNTIME="$HOME/.local/share/agent-memory-beacon/runtime"
 - **LLM 聚类是可选的**——不配 API key 就不会有任何数据离开你的电脑
 - **如果配了 LLM API key**：只有关键词筛选出的少量 session 片段会被发送。不发送完整对话记录。
 - **不要把 vault 直接放在云同步盘里**跑扫描——并发写入可能导致冲突。要么 vault 在本地 + 定期备份到云端，要么用 Obsidian Sync / Git。
+
+---
+
+## 八、Windows/Mac 同步工作流 / 8. Windows/Mac Sync Workflow
+
+协议版本：transcript/gap event + ready 为 v1；attachment event + ready 为 v2；
+Producer state 为 v3；Mac ledger 为 v4。附件只从 `attachment_roots` 白名单中的
+明确 transcript 引用采集，canonical blob 与审计 metadata 分别写到：
+
+```text
+Attachments/Agent-Memory-Beacon/remote/objects/<sha[:2]>/<sha>.<ext>
+04-Feedback/remote-attachments/<device>/<producer>/<seq20>-<event-id>.md
+```
+
+receipt 只有在两者 path/hash/bytes 都匹配同一 sealed generation manifest 后才
+发布。已有 durable v1 attachment 可兼容读取，但不会再生成新的 v1 attachment。
+
+1. 在 Windows 配置 `producer-replica`，运行 `beacon_sync.py ... init` 固化
+   device 与 producer identity。
+2. Windows 首次普通 `collect` 只建立 transcript baseline；明确需要历史记录时才
+   使用 `--include-existing`。
+3. Syncthing 将 outbox 以 Windows Send Only、Mac Receive Only 方式传输。
+4. Mac `authority run` 校验连续序列，扩展 transcript mirror，在
+   `harvester.lock` 下调用现有 harvester；随后在共享 authority cycle 锁内封存
+   generation，并把当前 pending 事件原子绑定到该代，再发布 receipt。
+5. Syncthing 将 published 以 Mac Send Only、Windows Receive Only 方式传输。
+6. Windows 首次接入用一次 `materialize --bootstrap` 建立 active generation；
+   后续 `run` 只按缺失的中间代逐代更新 read-only replica。active marker 提交后
+   再根据匹配 receipt 和 retention 清理 outbox，后台调度绝不隐式 bootstrap。
+
+Syncthing 只建立以下两个 folder：
+
+| Folder | Windows | Mac |
+|---|---|---|
+| `amb-windows-outbox` | `%USERPROFILE%\AgentMemoryBeaconSync\outbox` Send Only | `~/AgentMemoryBeaconSync/inbox/windows-main` Receive Only |
+| `amb-mac-published` | `%USERPROFILE%\AgentMemoryBeaconSync\published` Receive Only | `~/AgentMemoryBeaconSync/published` Send Only |
+
+配置前先确认 state、outbox、published、received-published、replica、inbox、
+attachment roots 与 canonical Vault 都是互不包含的绝对路径。不要用符号链接或
+大小写别名把这些目录重新指回彼此，也不要把 replica、state、attachment roots
+或 canonical Vault 交给 Syncthing。
+
+Windows 端最低为 Windows 10 1809 / Windows Server 2019（build 17763）。先运行
+Doctor 确认按句柄原子覆盖 API 可用，再安装 Task Scheduler 作业。
+
+Mac stable runtime 安装会在 authority sync 已启用时一起安装 sync LaunchAgent；
+Windows 安装器把 owned Task Scheduler task 与所选 Codex/Claude hooks 作为一个
+事务。安装或卸载前遇到同名但没有 ownership 标记的 task 时应停止，不要覆盖。
+
+Mac 从源码根目录安装并验收 authority stable runtime：
+
+```bash
+cd /absolute/path/to/agent-memory-beacon
+PY="$PWD/scripts/.venv/bin/python"
+CFG="$PWD/scripts/config.yaml"
+"$PY" -B scripts/beacon_sync.py --config "$CFG" doctor
+"$PY" -B scripts/install_runtime.py --verify-release
+"$PY" -B scripts/install_runtime.py --dry-run
+"$PY" -B scripts/install_runtime.py
+
+RUNTIME="$HOME/.local/share/agent-memory-beacon/runtime"
+"$RUNTIME/.venv/bin/python" -B "$RUNTIME/scripts/beacon_sync.py" \
+  --config "$RUNTIME/scripts/config.yaml" run
+"$RUNTIME/.venv/bin/python" -B "$RUNTIME/scripts/doctor.py" --profile live
+```
+
+Windows 从 PowerShell 源码根目录初始化；首次普通 collect 只建立 baseline，如需
+历史改用 `collect --include-existing`：
+
+```powershell
+Set-Location C:\absolute\path\to\agent-memory-beacon
+py -3.11 -m venv .\scripts\.venv
+$Python = (Resolve-Path .\scripts\.venv\Scripts\python.exe).Path
+$Config = (Resolve-Path .\scripts\config.yaml).Path
+& $Python -m pip install --requirement .\scripts\requirements.lock
+& $Python -m pip check
+& $Python -B .\scripts\beacon_sync.py --config $Config init
+& $Python -B .\scripts\beacon_sync.py --config $Config collect
+```
+
+等 Mac 生成第一代且 published 完整到达后，在目标空 replica 显式 bootstrap，
+然后安装版本化运行时、Task 和实际使用的 hook：
+
+```powershell
+& $Python -B .\scripts\beacon_sync.py --config $Config materialize --bootstrap
+& $Python -B .\scripts\beacon_sync.py --config $Config doctor
+
+$RuntimeRoot = "$env:LOCALAPPDATA\AgentMemoryBeacon\runtime"
+& $Python -B .\scripts\install_beacon_sync.py --config $Config --runtime-root $RuntimeRoot --codex-hooks --claude-hooks --dry-run
+$Installed = (& $Python -B .\scripts\install_beacon_sync.py --config $Config --runtime-root $RuntimeRoot --codex-hooks --claude-hooks | ConvertFrom-Json)
+
+$Binding = $Installed.actions[0].runtime
+$RuntimePython = [string]$Binding.python_path
+$RuntimeScript = [string]$Binding.script_path
+$RuntimeConfig = [string]$Binding.config_path
+$RuntimeDoctor = Join-Path (Split-Path $RuntimeScript) "doctor.py"
+& $RuntimePython -B $RuntimeScript --config $RuntimeConfig doctor
+& $RuntimePython -B $RuntimeDoctor --profile live
+```
+
+Windows release 固定在
+`%LOCALAPPDATA%\AgentMemoryBeacon\runtime\releases\<release-id>`。staging 通过
+同步测试、依赖安装、`pip check`、producer init、quick Doctor 和 manifest 校验
+后才更新 Task/hook；正式绑定不得指向系统 Python 或 Git checkout。旧 release
+保留，不由首版后台任务清理。不使用某个 Agent 时省略对应 hook 参数。
+
+常见停机状态：
+
+- `missing object`：等待 Syncthing 补齐同一 bundle，不要删 ready。
+- `sequence gap`：恢复较低 seq；不得跳到较高 seq。
+- `blocked conflict`：保留现场并检查 producer identity/event hash，不自动解封。
+- `attachment receipt unbound`：保留 inbox，在 Mac 重跑 `run`，确认 blob 和
+  metadata 同时进入 generation；不要手写 receipt。
+- `parent mismatch`：先同步并应用中间 generation；不要伪造 active marker。
+- `replica drift`：把本地编辑移出 managed replica，恢复上一代字节后重试。
+- `bootstrap required`：确认 replica 是预期的空派生目录，再人工运行一次
+  `materialize --bootstrap`；不要修改调度器让 `run` 自动接管。
+- `partial generation binding`：ledger 已损坏，停止发布并从完整备份恢复或
+  人工审计；不要直接填补单个字段。
+- `stale pending receipt`：先确认 current generation 完整，再重跑 Mac publish。
+- `received head not materialized / replica behind`：先补齐 published 传输并运行
+  materialize；未达到 receipt generation 前不要运行 outbox GC。
+- `storage paths overlap`：重新分配物理目录；不要通过关闭检查或建立 symlink 绕过。
+
+所有检查默认只读：
+
+```bash
+cd /absolute/path/to/agent-memory-beacon
+scripts/.venv/bin/python -B scripts/beacon_sync.py \
+  --config scripts/config.yaml doctor
+scripts/.venv/bin/python -B scripts/doctor.py --profile quick
+```
+
+Doctor 的 pending delivery 阈值固定为 24 小时在线目标，不由默认 7 天 GC
+retention 放大。当前 transport namespace 尚无可信的 Windows active-generation
+回执，所以 authority 保留 sealed generation 历史；只清理没有任何保留 manifest
+引用的可验证孤立对象。

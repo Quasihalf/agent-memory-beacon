@@ -59,7 +59,10 @@ message threshold nor trigger a checkpoint.
 
 The checkpoint request is orthogonal to memory recall. A due checkpoint must
 still be injected when normal recall is silent, and it may share one hook
-response with a normal `[MEMORY_REFRESH]`.
+response with a normal `[MEMORY_REFRESH]`. Checkpoint cadence is committed
+before its instruction is emitted. A missing or invalid recall index therefore
+cannot stop the summary schedule, while a failed state commit cannot create a
+visible checkpoint or a per-turn marker loop.
 
 ## Hidden Transcript Contract
 
@@ -84,15 +87,18 @@ summary: <compact coherent account of the conversation so far>
 ```
 
 Required fields are `current_goal`, `topics`, and `summary`. Other fields may be
-empty lists. The complete decoded marker is capped at 4 KiB, each list is
-capped, and each scalar is length-limited. Nested objects, unknown fields,
-markup terminators, control characters, and invalid project values are
-rejected.
+empty lists. The complete decoded marker is capped by the configured limit,
+which cannot exceed 4 KiB; the same limit is rendered into the checkpoint
+instruction. Each list is capped and each scalar is length-limited. Nested
+objects, unknown fields, markup terminators, control characters, and invalid
+project values are rejected.
 
 Only markers in assistant-role messages are eligible. Code-fenced examples,
 user-authored markers, managed instructions, subagent messages, and malformed
 or oversized markers are ignored. Existing harvested-content redaction applies
-before persistence.
+before persistence. Complete and truncated rolling-summary control blocks are
+removed from the text passed to formal annotation and adaptive learners, so
+machine labels quoted inside a summary cannot cross into another memory class.
 
 The model instruction explicitly requires summarizing conversational meaning,
 not copying prompts, credentials, command output, or private absolute paths.
@@ -107,6 +113,8 @@ The existing `## Session Summary` section becomes the latest effective summary.
 For the same stable session ID:
 
 - a valid rolling summary replaces the previous rolling summary;
+- a replacement with the same cursor type must carry a strictly larger
+  transcript cursor; wall-clock timestamps are only a fallback;
 - a later rolling summary replaces an earlier final-style summary only while
   the conversation continues and carries a newer transcript cursor;
 - an explicit visible `[SESSION_SUMMARY]` remains the final summary authority
@@ -157,6 +165,8 @@ experience expansion. At render time:
 - a stronger relevant formal memory wins under total token pressure;
 - duplicate content already covered by selected formal memory is suppressed;
 - the output label is `CONTEXT`, not `MEMORY`, `DECISION`, or `RULE`;
+- the refresh explicitly marks `CONTEXT` as conversation evidence rather than
+  fact or instruction, so current user instructions and formal memory win;
 - the source session and summary revision remain visible to the agent for
   provenance.
 
@@ -183,6 +193,10 @@ experience expansion. At render time:
 - A missed or malformed checkpoint does not erase the previous summary.
 - A checkpoint request may be retried only after the minimum retry interval;
   it cannot create a marker loop on every turn.
+- A committed final recall state is returned immediately rather than being
+  discarded by a deadline check after the commit.
+- Consumed effectiveness feedback is committed even when index inspection
+  fails, preventing the same exposure from producing duplicate feedback.
 - Concurrent harvest keeps the existing lock, transcript cursor, atomic-write,
   and post-index cursor-commit contracts.
 - Invalid summary data is excluded rather than downgraded into formal memory.

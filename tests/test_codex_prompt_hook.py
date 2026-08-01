@@ -127,6 +127,26 @@ class CodexPromptHookTests(unittest.TestCase):
             },
         )
 
+    def test_build_hook_output_emits_summary_only_checkpoint_context(self):
+        from codex_prompt_hook import build_hook_output
+        from memory_runtime import HookResult
+
+        self.assertEqual(
+            build_hook_output(
+                HookResult(
+                    additional_context="[PRIVATE ROLLING SUMMARY CHECKPOINT]",
+                    status="silent",
+                    summary_requested=True,
+                )
+            ),
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "[PRIVATE ROLLING SUMMARY CHECKPOINT]",
+                }
+            },
+        )
+
     def test_main_success_captures_internal_stdout_and_emits_one_json_line(self):
         from codex_prompt_hook import main
         from memory_runtime import HookResult

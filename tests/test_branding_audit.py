@@ -91,7 +91,7 @@ class BrandingAuditTests(unittest.TestCase):
 
     def test_readme_documents_legacy_compatibility_without_old_product_title(self):
         content = read_text(os.path.join(REPO_ROOT, "README.md"))
-        self.assertTrue(content.startswith("# Agent Memory Beacon v0.5.0\n"))
+        self.assertTrue(content.startswith("# Agent Memory Beacon v0.7.0\n"))
         self.assertIn("~/AgentMemoryBeacon", content)
         self.assertIn("existing `~/ObsidianBrain`", content)
         self.assertIn("Tubo2333/obsidian-knowledge-brain", content)
@@ -101,7 +101,7 @@ class BrandingAuditTests(unittest.TestCase):
     def test_skill_manifest_uses_current_product_contract(self):
         content = read_text(os.path.join(REPO_ROOT, "SKILL.md"))
         self.assertIn("name: agent-memory-beacon", content)
-        self.assertIn("# Agent Memory Beacon v0.5.0", content)
+        self.assertIn("# Agent Memory Beacon v0.7.0", content)
         self.assertIn("patches/AGENT_MEMORY_BEACON.md.patch", content)
         self.assertNotIn("Agent Memory Vault", content)
         self.assertNotIn("patches/CLAUDE.md.patch", content)

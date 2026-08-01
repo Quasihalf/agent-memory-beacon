@@ -94,7 +94,9 @@ def install_hooks(
     prompt_changed = False
     for event, script, arguments, timeout, mode in specifications:
         suffix = f" {arguments}" if arguments else ""
-        command = f'{HOOK_OWNER_MARKER} "{python_path}" "{script}"{suffix}'
+        command = (
+            f'{HOOK_OWNER_MARKER} "{python_path}" -B "{script}"{suffix}'
+        )
         event_hooks = hooks.setdefault("hooks", {}).setdefault(event, [])
         action = upsert_owned_hook(
             event_hooks,
@@ -252,10 +254,11 @@ def _is_owned_command(
         tokens = tokens[1:]
     if len(tokens) < 2:
         return False
-    script = tokens[1]
+    script_index = 2 if len(tokens) >= 3 and tokens[1] == "-B" else 1
+    script = tokens[script_index]
     if not os.path.isabs(script) or os.path.basename(script) != script_name:
         return False
-    if not _matches_event_arguments(tokens[2:], mode):
+    if not _matches_event_arguments(tokens[script_index + 1 :], mode):
         return False
     if marked:
         return True

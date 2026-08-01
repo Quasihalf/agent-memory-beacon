@@ -1,9 +1,9 @@
 {
-  "schema_version": "1.2",
+  "schema_version": "1.4",
   "runtime_schema_version": "2.0",
   "assertion_contract": {
-    "version": 2,
-    "sha256": "75c7608a2f0a16e84de12c92e0518f7962b3529fe41ed63bed0837145777f4ca"
+    "version": 4,
+    "sha256": "61c56e94ece2fb120f817d99fef2bc1b8d780014319eeb339f1da92160631306"
   },
   "projects": ["agent-memory-beacon", "tcad", "notes-counter"],
   "project_keywords": {
@@ -185,6 +185,32 @@
       "forbidden_ids": ["insight:candidate-lure", "insight:assistant-lure"],
       "candidate_lure_ids": ["insight:candidate-lure"],
       "assistant_lure_ids": ["insight:assistant-lure"]
+    },
+    {
+      "id": "graph-v3-semantic-paths",
+      "prompt": "graphreleaseprobe 图关系锚点",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": [
+        "decision:graph-release-anchor",
+        "workflow:graph-release-one-hop",
+        "error:graph-release-two-hop"
+      ],
+      "allowed_ids": [
+        "decision:graph-release-anchor",
+        "workflow:graph-release-one-hop",
+        "error:graph-release-two-hop"
+      ],
+      "forbidden_ids": ["workflow:graph-release-low-confidence"]
+    },
+    {
+      "id": "conversation-summary-context",
+      "prompt": "quartzcheckpoint 长对话当前目标进度待办",
+      "cwd": "/tmp/agent-memory-beacon",
+      "trigger": "first_prompt",
+      "required_ids": ["conversation_summary-4e51a0adb8dc2aa8"],
+      "allowed_ids": ["conversation_summary-4e51a0adb8dc2aa8"],
+      "forbidden_ids": []
     }
   ],
   "trigger_cases": [

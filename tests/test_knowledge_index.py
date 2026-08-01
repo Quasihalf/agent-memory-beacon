@@ -20,14 +20,513 @@ from knowledge_index import (
     collect_indexable_notes,
     rebuild_vault_knowledge_indexes,
 )
+from conversation_summary import canonical_summary_text
 from memory_judge import render_formal_memory_entry
 from insight_memory import render_formal_record
+from memory_graph import validate_memory_graph
+from memory_recall import load_recall_index
 from memory_schema import normalize_formal_record
 from skill_preference_learner import render_formal_rule as render_skill_rule
 from workflow_memory import render_formal_rule as render_workflow_rule
 
 
 class KnowledgeIndexTests(unittest.TestCase):
+    def test_conversation_summaries_keep_latest_revision_per_stable_session(self):
+        older = conversation_summary_note(
+            "shared-session",
+            "旧的滚动摘要",
+            path="01-Projects/demo/Memory/sessions/older",
+            updated_at="2026-07-31T09:00:00+08:00",
+        )
+        newer = conversation_summary_note(
+            "shared-session",
+            "新的滚动摘要",
+            path="01-Projects/demo/Memory/sessions/newer",
+            updated_at="2026-07-31T10:00:00+08:00",
+        )
+
+        first = build_recall_index([newer, older])
+        second = build_recall_index([older, newer])
+
+        self.assertEqual(first["conversation_summary_count"], 1)
+        self.assertEqual(
+            first["conversation_summaries"],
+            second["conversation_summaries"],
+        )
+        record = first["conversation_summaries"][0]
+        self.assertEqual(record["session_id"], "shared-session")
+        self.assertEqual(record["summary"], "新的滚动摘要")
+        self.assertEqual(
+            record["search_terms"],
+            second["conversation_summaries"][0]["search_terms"],
+        )
+        self.assertEqual(
+            record["summary_revision"],
+            second["conversation_summaries"][0]["summary_revision"],
+        )
+
+    def test_conversation_summary_index_supports_legacy_plain_session_summary(self):
+        note = conversation_summary_note(
+            "legacy-session",
+            "继续完成旧会话的索引兼容",
+            structured=False,
+        )
+
+        record = build_recall_index([note])["conversation_summaries"][0]
+
+        self.assertEqual(record["project"], "demo")
+        self.assertEqual(record["summary"], "继续完成旧会话的索引兼容")
+        self.assertTrue(record["current_goal"])
+        self.assertTrue(record["topics"])
+
+    def test_conversation_summary_index_derives_missing_project_from_session_path(self):
+        note = conversation_summary_note(
+            "path-project-session",
+            "从规范会话路径绑定项目",
+            project="",
+        )
+
+        record = build_recall_index([note])["conversation_summaries"][0]
+
+        self.assertEqual(record["project"], "demo")
+
+    def test_conversation_summary_index_rejects_candidates_and_missing_session_ids(self):
+        candidate = conversation_summary_note(
+            "candidate-session",
+            "候选摘要不得进入索引",
+            path="04-Feedback/_memory-candidates/Memory/sessions/candidate",
+        )
+        missing_id = conversation_summary_note(
+            "",
+            "缺少稳定会话 ID",
+            path="01-Projects/demo/Memory/sessions/missing-id",
+        )
+
+        index = build_recall_index([candidate, missing_id])
+
+        self.assertEqual(index["conversation_summary_count"], 0)
+        self.assertEqual(index["conversation_summaries"], [])
+
+    def test_conversation_summary_index_does_not_downgrade_malformed_json_to_plain_text(self):
+        note = conversation_summary_note(
+            "malformed-session",
+            "临时占位",
+        )
+        note["body"] = (
+            "# 滚动会话摘要\n\n## Session Summary\n"
+            '{"project":"demo","current_goal":\n'
+        )
+
+        index = build_recall_index([note])
+
+        self.assertEqual(index["conversation_summaries"], [])
+
+    def test_conversation_summary_index_rejects_structured_lookalikes_but_accepts_complete_legacy(self):
+        malformed_yaml = conversation_summary_note(
+            "malformed-yaml",
+            "临时占位",
+        )
+        malformed_yaml["body"] = (
+            "# 滚动会话摘要\n\n## Session Summary\n"
+            "current_goal: unfinished\n"
+            "topics: [indexing]\n"
+            'summary: "unterminated\n'
+        )
+        malformed_long_key = conversation_summary_note(
+            "malformed-long-key",
+            "临时占位",
+        )
+        malformed_long_key["body"] = (
+            "# 滚动会话摘要\n\n## Session Summary\n"
+            + ("mappingkey" * 20)
+            + ": [unterminated\n"
+        )
+        partial_v1 = conversation_summary_note("partial-v1", "临时占位")
+        partial_v1["body"] = (
+            "# 滚动会话摘要\n\n## Session Summary\n"
+            "current_goal: incomplete\n"
+            "summary: must-not-downgrade\n"
+        )
+        incomplete_legacy = conversation_summary_note(
+            "incomplete-legacy",
+            "临时占位",
+        )
+        incomplete_legacy["body"] = (
+            "# 滚动会话摘要\n\n## Session Summary\n"
+            "summary: missing legacy envelope\n"
+        )
+        complete_legacy = conversation_summary_note(
+            "complete-legacy",
+            "临时占位",
+        )
+        complete_legacy["body"] = (
+            "# 滚动会话摘要\n\n## Session Summary\n"
+            "projects: [demo]\n"
+            "primary: demo\n"
+            "summary: 完整旧版总结\n"
+        )
+
+        index = build_recall_index(
+            [
+                malformed_yaml,
+                malformed_long_key,
+                partial_v1,
+                incomplete_legacy,
+                complete_legacy,
+            ]
+        )
+
+        self.assertEqual(index["conversation_summary_count"], 1)
+        self.assertEqual(
+            index["conversation_summaries"][0]["summary"],
+            "完整旧版总结",
+        )
+
+    def test_conversation_summary_index_accepts_migrated_legacy_envelopes(self):
+        stale_route = conversation_summary_note(
+            "frontmatter-stale-route",
+            "临时占位",
+            path=(
+                "01-Projects/agent-memory-beacon/Memory/sessions/"
+                "stale-pre-migration-route"
+            ),
+            project="agent-memory-beacon",
+        )
+        stale_route["body"] = (
+            "# 滚动会话摘要\n\n## Session Summary\n"
+            "projects: [github-obsidian-knowledge-brain]\n"
+            "primary: github-obsidian-knowledge-brain\n"
+            "decisions:\n"
+            "errors: []\n"
+            "summary: 迁移后以规范路径和 frontmatter 为准\n"
+        )
+        body_session_id = conversation_summary_note(
+            "frontmatter-session-id",
+            "临时占位",
+            path="01-Projects/demo/Memory/sessions/body-session-id",
+        )
+        body_session_id["body"] = (
+            "# 滚动会话摘要\n\n## Session Summary\n"
+            "projects: [old-demo-route]\n"
+            "primary: old-demo-route\n"
+            "decisions: []\n"
+            "errors: []\n"
+            "session_id: ignored-body-session-id\n"
+            "summary: 正文会话 ID 不覆盖 frontmatter\n"
+        )
+
+        index = build_recall_index([stale_route, body_session_id])
+        records = {
+            record["summary"]: record
+            for record in index["conversation_summaries"]
+        }
+
+        self.assertEqual(index["conversation_summary_count"], 2)
+        self.assertEqual(
+            records["迁移后以规范路径和 frontmatter 为准"]["project"],
+            "agent-memory-beacon",
+        )
+        self.assertEqual(
+            records["正文会话 ID 不覆盖 frontmatter"]["session_id"],
+            "frontmatter-session-id",
+        )
+
+    def test_conversation_summary_index_rejects_invalid_legacy_field_shapes(self):
+        invalid_bodies = (
+            "projects: demo\nprimary: demo\nsummary: invalid projects\n",
+            "projects: [demo]\nprimary: [demo]\nsummary: invalid primary\n",
+            "projects: [demo]\nprimary: demo\nsummary: [invalid]\n",
+            (
+                "projects: [demo]\nprimary: demo\ndecisions: {id: bad}\n"
+                "summary: invalid decisions\n"
+            ),
+            (
+                "projects: [demo]\nprimary: demo\nerrors: {type: bad}\n"
+                "summary: invalid errors\n"
+            ),
+            (
+                "projects: [demo]\nprimary: demo\nsession_id: [bad]\n"
+                "summary: invalid session id\n"
+            ),
+            (
+                "projects: [demo]\nprimary: demo\nunknown: true\n"
+                "summary: unknown field\n"
+            ),
+        )
+
+        notes = []
+        for index, body in enumerate(invalid_bodies):
+            note = conversation_summary_note(
+                f"invalid-legacy-shape-{index}",
+                "临时占位",
+                path=(
+                    "01-Projects/demo/Memory/sessions/"
+                    f"invalid-legacy-shape-{index}"
+                ),
+            )
+            note["body"] = (
+                "# 滚动会话摘要\n\n## Session Summary\n" + body
+            )
+            notes.append(note)
+
+        self.assertEqual(
+            build_recall_index(notes)["conversation_summaries"],
+            [],
+        )
+
+    def test_conversation_summary_index_rejects_yaml_indicator_downgrades(self):
+        malformed_bodies = (
+            '"unterminated quoted legacy summary',
+            "'unterminated quoted legacy summary",
+            "%YAML 1.2\nplain text without a document start",
+            "---\n[unterminated collection",
+            "|-\n  summary: [unterminated",
+        )
+        notes = []
+        for index, body in enumerate(malformed_bodies):
+            note = conversation_summary_note(
+                f"malformed-indicator-{index}",
+                "临时占位",
+                path=(
+                    "01-Projects/demo/Memory/sessions/"
+                    f"malformed-indicator-{index}"
+                ),
+            )
+            note["body"] = (
+                "# 滚动会话摘要\n\n## Session Summary\n" + body + "\n"
+            )
+            notes.append(note)
+        plain = conversation_summary_note(
+            "clearly-plain-legacy",
+            "Clearly plain legacy prose remains compatible.",
+            path=(
+                "01-Projects/demo/Memory/sessions/"
+                "clearly-plain-legacy"
+            ),
+            structured=False,
+        )
+
+        index = build_recall_index([*notes, plain])
+
+        self.assertEqual(index["conversation_summary_count"], 1)
+        self.assertEqual(
+            index["conversation_summaries"][0]["summary"],
+            "Clearly plain legacy prose remains compatible.",
+        )
+
+    def test_conversation_summary_admission_uses_exact_shared_source_contract(self):
+        invalid_paths = (
+            "01-projects/demo/Memory/sessions/session",
+            "01-Projects/demo/memory/sessions/session",
+            "01-Projects/demo/Memory/Sessions/session",
+            "01-Projects/demo/Memory/sessions/nested/session",
+            "01-Projects/demo/Memory/sessions/..",
+            "01-Projects/demo/Memory/sessions/.candidate",
+            "01-Projects/demo/Memory/sessions/.candidate.md",
+            "01-Projects/demo/Memory/sessions/_candidate.md",
+            "01-Projects/demo/Memory/sessions/ session.md",
+            "01-Projects/demo/Memory/sessions/session .md",
+            "01-Projects/demo/Memory/sessions/session.md ",
+            "04-Feedback/_memory-candidates/Memory/sessions/session",
+        )
+
+        for index, path in enumerate(invalid_paths):
+            with self.subTest(path=path):
+                note = conversation_summary_note(
+                    f"invalid-source-{index}",
+                    "不得索引",
+                    path=path,
+                )
+                self.assertEqual(
+                    build_recall_index([note])["conversation_summaries"],
+                    [],
+                )
+
+        for index, path in enumerate(
+            (
+                "01-Projects/demo/Memory/sessions/真实 会话标题",
+                "01-Projects/demo/Memory/sessions/真实 会话标题.md",
+            )
+        ):
+            with self.subTest(valid_path=path):
+                note = conversation_summary_note(
+                    f"valid-unicode-source-{index}",
+                    "应索引真实 Unicode 标题",
+                    path=path,
+                )
+                self.assertEqual(
+                    build_recall_index([note])[
+                        "conversation_summary_count"
+                    ],
+                    1,
+                )
+
+        mismatch = conversation_summary_note(
+            "project-mismatch",
+            "不得跨项目",
+            path="01-Projects/demo/Memory/sessions/project-mismatch",
+            project="other",
+        )
+        self.assertEqual(
+            build_recall_index([mismatch])["conversation_summaries"],
+            [],
+        )
+
+    def test_conversation_summary_freshness_prioritizes_numeric_cursor_before_time(self):
+        absolute_older = conversation_summary_note(
+            "absolute-time-session",
+            "绝对时间较旧",
+            path="01-Projects/demo/Memory/sessions/absolute-older",
+            updated_at="2026-07-31T10:00:00+08:00",
+            cursor="file-bytes:99",
+        )
+        absolute_newer = conversation_summary_note(
+            "absolute-time-session",
+            "绝对时间较新",
+            path="01-Projects/demo/Memory/sessions/absolute-newer",
+            updated_at="2026-07-31T03:00:00Z",
+            cursor="file-bytes:9",
+        )
+        self.assertEqual(
+            build_recall_index(
+                [absolute_newer, absolute_older]
+            )["conversation_summaries"][0]["summary"],
+            "绝对时间较旧",
+        )
+
+        for cursor_kind in ("file-bytes", "zcode-messages"):
+            with self.subTest(cursor_kind=cursor_kind):
+                nine = conversation_summary_note(
+                    f"numeric-cursor-{cursor_kind}",
+                    "游标九",
+                    path=(
+                        "01-Projects/demo/Memory/sessions/"
+                        f"numeric-nine-{cursor_kind}"
+                    ),
+                    updated_at="2026-07-31T10:00:00+08:00",
+                    cursor=f"{cursor_kind}:9",
+                )
+                ten = conversation_summary_note(
+                    f"numeric-cursor-{cursor_kind}",
+                    "游标十",
+                    path=(
+                        "01-Projects/demo/Memory/sessions/"
+                        f"numeric-ten-{cursor_kind}"
+                    ),
+                    updated_at="2026-07-31T02:00:00Z",
+                    cursor=f"{cursor_kind}:10",
+                )
+                first = build_recall_index([nine, ten])
+                second = build_recall_index([ten, nine])
+                self.assertEqual(
+                    first["conversation_summaries"],
+                    second["conversation_summaries"],
+                )
+                self.assertEqual(
+                    first["conversation_summaries"][0]["summary"],
+                    "游标十",
+                )
+
+        legacy_a = conversation_summary_note(
+            "legacy-fallback",
+            "旧版甲",
+            path="01-Projects/demo/Memory/sessions/legacy-a",
+            updated_at="",
+        )
+        legacy_b = conversation_summary_note(
+            "legacy-fallback",
+            "旧版乙",
+            path="01-Projects/demo/Memory/sessions/legacy-b",
+            updated_at="",
+        )
+        self.assertEqual(
+            build_recall_index([legacy_a, legacy_b])["conversation_summaries"],
+            build_recall_index([legacy_b, legacy_a])["conversation_summaries"],
+        )
+
+    def test_conversation_summary_body_changes_generation_identity(self):
+        first = build_recall_index(
+            [conversation_summary_note("generation-session", "第一版摘要")]
+        )
+        second = build_recall_index(
+            [conversation_summary_note("generation-session", "第二版摘要")]
+        )
+
+        self.assertNotEqual(first["generation_id"], second["generation_id"])
+
+    def test_conversation_summaries_stay_out_of_formal_units_graph_and_experiences(self):
+        note = conversation_summary_note(
+            "isolated-session",
+            "滚动摘要只能进入独立派生集合",
+        )
+
+        index = build_recall_index([note])
+        graph = build_memory_graph([note], index)
+        summary_id = index["conversation_summaries"][0]["id"]
+
+        self.assertEqual(index["units"], [])
+        self.assertEqual(index["experience_bundles"], [])
+        self.assertNotIn(summary_id, {node["id"] for node in graph["nodes"]})
+
+    def test_rebuild_writes_observable_graph_projection_nodes(self):
+        with tempfile.TemporaryDirectory() as vault:
+            memory_dir = os.path.join(
+                vault,
+                "01-Projects",
+                "demo",
+                "Memory",
+            )
+            os.makedirs(memory_dir)
+            decision = aggregate_record(
+                "decision-observable-graph",
+                "decision",
+                "把正式记忆显示为独立图谱节点",
+                "投影层不改变正式来源",
+            )
+            write_text(
+                os.path.join(memory_dir, "decisions.md"),
+                markdown_document(
+                    {
+                        "schema_version": "2.0",
+                        "project": "demo",
+                        "decisions": [decision],
+                    },
+                    "# Decisions\n",
+                ),
+            )
+
+            result = rebuild_vault_knowledge_indexes({"vault_path": vault})
+
+            projection_root = os.path.join(
+                vault,
+                "03-Maps",
+                "_memory-nodes",
+            )
+            projected = [
+                os.path.join(current, filename)
+                for current, _dirs, files in os.walk(projection_root)
+                for filename in files
+                if filename.endswith(".md")
+            ]
+            self.assertGreaterEqual(result["graph_projection_nodes"], 1)
+            self.assertEqual(
+                len(projected),
+                result["graph_projection_nodes"],
+            )
+            self.assertTrue(
+                any(
+                    "把正式记忆显示为独立图谱节点" in read_text(path)
+                    for path in projected
+                )
+            )
+            second = rebuild_vault_knowledge_indexes({"vault_path": vault})
+            self.assertEqual(second["recall_units"], 1)
+            self.assertEqual(
+                second["graph_projection_nodes"],
+                result["graph_projection_nodes"],
+            )
+            self.assertEqual(second["graph_projection_written"], 0)
+
     def test_project_and_adaptive_records_round_trip_authority_metadata(self):
         with tempfile.TemporaryDirectory() as vault:
             project_dir = os.path.join(vault, "01-Projects", "demo", "Memory")
@@ -189,6 +688,41 @@ class KnowledgeIndexTests(unittest.TestCase):
             )
             self.assertNotIn("privatepromotionleaktoken", json.dumps(recall))
 
+    def test_all_configured_adaptive_candidate_roots_are_never_indexed(self):
+        for section in (
+            "personal_memory",
+            "skill_preferences",
+            "workflow_memory",
+            "insight_memory",
+        ):
+            with self.subTest(section=section), tempfile.TemporaryDirectory() as vault:
+                relative_dir = f"05-Agent-Memory/private-{section}-candidates"
+                candidate_dir = os.path.join(vault, relative_dir)
+                os.makedirs(candidate_dir)
+                token = f"{section.replace('_', '')}candidateleaktoken"
+                write_text(
+                    os.path.join(candidate_dir, "private.md"),
+                    markdown_document(
+                        {
+                            "schema_version": "2.0",
+                            "status": "candidate",
+                        },
+                        f"# {token}\n",
+                    ),
+                )
+
+                result = rebuild_vault_knowledge_indexes(
+                    {
+                        "vault_path": vault,
+                        section: {"candidate_dir": relative_dir},
+                    }
+                )
+
+                machine_text = "\n".join(
+                    read_text(path) for path in result["written"]
+                )
+                self.assertNotIn(token, machine_text)
+
     def test_rebuild_writes_configured_runtime_recall_index_path(self):
         with tempfile.TemporaryDirectory() as vault:
             custom = os.path.join(vault, "06-Custom", "runtime-recall.json")
@@ -202,11 +736,73 @@ class KnowledgeIndexTests(unittest.TestCase):
             rebuild_vault_knowledge_indexes(cfg)
 
             self.assertTrue(os.path.exists(custom))
+            custom_graph = os.path.join(vault, "06-Custom", "memory-graph.json")
+            self.assertTrue(os.path.exists(custom_graph))
+            self.assertIn("_graph", load_recall_index(custom))
             self.assertFalse(
                 os.path.exists(
                     os.path.join(vault, "05-Agent-Memory", "recall-index.json")
                 )
             )
+            self.assertFalse(
+                os.path.exists(
+                    os.path.join(vault, "05-Agent-Memory", "memory-graph.json")
+                )
+            )
+
+    def test_graph_generation_changes_when_note_links_change(self):
+        original_note = {
+            "path": "01-Projects/demo/Memory/decisions",
+            "title": "Decisions",
+            "project": "demo",
+            "type": "decisions",
+            "frontmatter": {"schema_version": "2.0", "project": "demo"},
+            "body": "# Decisions\n",
+            "links": ["01-Projects/demo/Memory/pitfalls"],
+        }
+        changed_note = {
+            **original_note,
+            "links": [],
+        }
+        original_index = build_recall_index([original_note])
+        changed_index = build_recall_index([changed_note])
+        old_graph = build_memory_graph([original_note], original_index)
+
+        self.assertNotEqual(
+            original_index["generation_id"],
+            changed_index["generation_id"],
+        )
+        with self.assertRaisesRegex(ValueError, "generation_mismatch=1"):
+            validate_memory_graph(
+                old_graph,
+                changed_index["units"],
+                allow_legacy=False,
+                expected_generation_id=changed_index["generation_id"],
+            )
+
+    def test_graph_generation_changes_when_note_title_changes(self):
+        original_note = {
+            "path": "01-Projects/demo/Memory/sessions/session-one",
+            "title": "原始会话标题",
+            "project": "demo",
+            "type": "session",
+            "frontmatter": {"date": "2026-07-26", "project": "demo"},
+            "body": "# 原始会话标题\n",
+            "links": [],
+        }
+        changed_note = {
+            **original_note,
+            "title": "更新后的会话标题",
+            "body": "# 更新后的会话标题\n",
+        }
+
+        original_index = build_recall_index([original_note])
+        changed_index = build_recall_index([changed_note])
+
+        self.assertNotEqual(
+            original_index["generation_id"],
+            changed_index["generation_id"],
+        )
 
     def test_skill_operational_boundaries_are_available_to_recall(self):
         with tempfile.TemporaryDirectory() as vault:
@@ -849,9 +1445,16 @@ decisions:
             self.assertGreater(result["recall_units"], 0)
             self.assertGreater(result["graph_nodes"], 0)
             self.assertGreater(result["graph_edges"], 0)
+            self.assertEqual(result["graph_unbound_evidence"], 0)
+            self.assertEqual(result["graph_missing_memory_nodes"], 0)
 
             recall = load_json(recall_path)
             graph = load_json(graph_path)
+            self.assertEqual(
+                result["graph_generation_id"],
+                recall["generation_id"],
+            )
+            self.assertEqual(graph["generation_id"], recall["generation_id"])
             unit_types = {unit["type"] for unit in recall["units"]}
             self.assertEqual(recall["schema_version"], "2.0")
             self.assertIn("decision", unit_types)
@@ -891,11 +1494,19 @@ decisions:
             self.assertEqual(len(matching_decisions[0]["source_refs"]), 2)
 
             node_types = {node["type"] for node in graph["nodes"]}
+            memory_kinds = {
+                node["kind"]
+                for node in graph["nodes"]
+                if node["type"] == "memory"
+            }
             edge_relations = {edge["relation"] for edge in graph["edges"]}
+            self.assertEqual(graph["schema_version"], "3.0")
             self.assertIn("project", node_types)
-            self.assertIn("decision", node_types)
-            self.assertIn("skill", node_types)
-            self.assertIn("workflow", node_types)
+            self.assertIn("memory", node_types)
+            self.assertIn("note", node_types)
+            self.assertIn("decision", memory_kinds)
+            self.assertIn("skill", memory_kinds)
+            self.assertIn("workflow", memory_kinds)
             self.assertIn("belongs_to", edge_relations)
             self.assertIn("recorded_in", edge_relations)
             personal_node = next(
@@ -903,7 +1514,8 @@ decisions:
                 for node in graph["nodes"]
                 if node["id"] == "note:05-Agent-Memory/personal-memory"
             )
-            self.assertEqual(personal_node["type"], "personal-memory")
+            self.assertEqual(personal_node["type"], "note")
+            self.assertEqual(personal_node["kind"], "personal-memory")
 
     def test_rebuild_does_not_follow_predictable_index_temp_symlinks(self):
         with tempfile.TemporaryDirectory() as vault:
@@ -918,6 +1530,7 @@ decisions:
                 "global-atoms.md",
                 "recall-index.json",
                 "memory-graph.json",
+                "memory-graph-quality.md",
                 "recall-context.md",
             )
             for name in output_names:
@@ -1054,6 +1667,172 @@ decisions_made:
                 "decision-transitive": ["decision-dependent"],
             },
         )
+
+    def test_memory_graph_v3_normalizes_nodes_and_binds_edge_evidence(self):
+        unit = normalize_formal_record(
+            {
+                "id": "decision-graph-contract",
+                "type": "decision",
+                "status": "active",
+                "project": "demo",
+                "scope": "project",
+                "title": "图谱关系必须绑定来源版本",
+                "summary": "派生关系不能脱离正式记忆证据",
+                "date": "2026-07-26",
+                "source_refs": ["session:graph-contract"],
+            },
+            memory_type="decision",
+            default_project="demo",
+            source_ref="",
+        )
+        unit.update(
+            {
+                "path": "01-Projects/demo/Memory/decisions",
+                "source_note": "note:01-Projects/demo/Memory/decisions",
+                "terms": ["图谱", "关系", "来源", "版本"],
+                "aliases": [],
+            }
+        )
+        note = {
+            "path": "01-Projects/demo/Memory/decisions",
+            "title": "Decisions",
+            "project": "demo",
+            "type": "decisions",
+            "frontmatter": {"schema_version": "2.0", "project": "demo"},
+            "body": "# Decisions\n",
+            "links": [],
+        }
+
+        graph = build_memory_graph(
+            [note],
+            {"schema_version": "2.0", "units": [unit]},
+        )
+
+        self.assertEqual(graph["schema_version"], "3.0")
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        self.assertEqual(nodes[unit["id"]]["type"], "memory")
+        self.assertEqual(nodes[unit["id"]]["kind"], "decision")
+        self.assertEqual(nodes[unit["id"]]["revision"], unit["revision"])
+        self.assertEqual(nodes[unit["source_note"]]["type"], "note")
+        self.assertEqual(nodes[unit["source_note"]]["kind"], "decisions")
+        recorded = next(
+            edge
+            for edge in graph["edges"]
+            if edge["source"] == unit["id"]
+            and edge["relation"] == "recorded_in"
+        )
+        self.assertEqual(recorded["confidence"], 1.0)
+        self.assertEqual(
+            recorded["evidence"],
+            [
+                {
+                    "source_ref": unit["source_note"],
+                    "source_revision": unit["revision"],
+                    "observed_at": "2026-07-26",
+                    "derivation": "formal-record",
+                }
+            ],
+        )
+
+    def test_memory_graph_emits_declared_relations_for_non_insight_memory(self):
+        source = normalize_formal_record(
+            {
+                "id": "decision-semantic-source",
+                "status": "active",
+                "project": "demo",
+                "scope": "project",
+                "title": "正式记忆显式声明语义关系",
+                "summary": "图谱只派生有来源约束的关系",
+                "date": "2026-07-26",
+                "source_refs": ["session:semantic-source"],
+                "supports": ["project_rule-supported"],
+                "operationalized_as": ["workflow-implementation"],
+                "related_to": ["preference-related"],
+                "contradicts": ["decision-conflicting"],
+            },
+            memory_type="decision",
+            default_project="demo",
+        )
+        source.update(
+            {
+                "path": "01-Projects/demo/Memory/decisions",
+                "source_note": "note:01-Projects/demo/Memory/decisions",
+                "terms": ["正式记忆", "语义关系"],
+                "aliases": [],
+            }
+        )
+
+        graph = build_memory_graph(
+            [],
+            {"schema_version": "2.0", "units": [source]},
+        )
+
+        edges = {
+            (edge["source"], edge["relation"], edge["target"])
+            for edge in graph["edges"]
+        }
+        self.assertTrue(
+            {
+                (
+                    "decision-semantic-source",
+                    "supports",
+                    "project_rule-supported",
+                ),
+                (
+                    "decision-semantic-source",
+                    "operationalized_as",
+                    "workflow-implementation",
+                ),
+                (
+                    "decision-semantic-source",
+                    "related_to",
+                    "preference-related",
+                ),
+                (
+                    "decision-semantic-source",
+                    "contradicts",
+                    "decision-conflicting",
+                ),
+            }.issubset(edges)
+        )
+        relation_edges = [
+            edge
+            for edge in graph["edges"]
+            if edge["source"] == source["id"]
+            and edge["relation"]
+            in {
+                "supports",
+                "operationalized_as",
+                "related_to",
+                "contradicts",
+            }
+        ]
+        self.assertTrue(
+            all(
+                edge["evidence"][0]["source_revision"] == source["revision"]
+                and edge["evidence"][0]["derivation"] == "formal-record"
+                for edge in relation_edges
+            )
+        )
+
+    def test_rebuild_writes_memory_graph_quality_report(self):
+        with tempfile.TemporaryDirectory() as vault:
+            write_fixture_vault(vault)
+
+            result = rebuild_vault_knowledge_indexes({"vault_path": vault})
+
+            report_path = os.path.join(
+                vault,
+                "05-Agent-Memory",
+                "memory-graph-quality.md",
+            )
+            self.assertTrue(os.path.exists(report_path))
+            self.assertIn(report_path, result["written"])
+            report = read_text(report_path)
+            self.assertIn("schema_version: '3.0'", report)
+            self.assertIn("invalid_edges: 0", report)
+            self.assertIn("missing_evidence: 0", report)
+            self.assertIn("stale_revision_edges: 0", report)
 
 
 def write_fixture_vault(vault):
@@ -1280,6 +2059,55 @@ last_seen: '2026-07-06T10:00:00+08:00'
             "- memory: | 2026-07-04 | demo | 这是旧索引表格行，不应该进入 recall |\n",
         ),
     )
+
+
+def conversation_summary_note(
+    session_id,
+    summary,
+    *,
+    path="01-Projects/demo/Memory/sessions/summary-session",
+    project="demo",
+    updated_at="2026-07-31T10:00:00+08:00",
+    cursor="",
+    structured=True,
+):
+    title = "滚动会话摘要"
+    if structured:
+        summary_body = canonical_summary_text(
+            {
+                "project": project,
+                "current_goal": "完成滚动会话摘要索引",
+                "topics": ["会话摘要", "派生索引"],
+                "progress": ["已保存最新摘要"],
+                "constraints": ["不得进入正式记忆"],
+                "important_context": [],
+                "open_items": [],
+                "summary": summary,
+            }
+        )
+    else:
+        summary_body = summary
+    frontmatter = {
+        "session_id": session_id,
+        "date": "2026-07-31",
+        "project": project,
+        "ai_title": title,
+        "summary_type": "session",
+        "summary_updated_at": updated_at,
+    }
+    if cursor:
+        frontmatter["summary_source_cursor"] = cursor
+    body = f"# {title}\n\n## Session Summary\n{summary_body}\n"
+    return {
+        "path": path,
+        "title": title,
+        "project": project,
+        "type": "session",
+        "text": body,
+        "frontmatter": frontmatter,
+        "body": body,
+        "links": [],
+    }
 
 
 def aggregate_record(

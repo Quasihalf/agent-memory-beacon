@@ -10,8 +10,16 @@ SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
 sys.path.insert(0, SCRIPTS_DIR)
 
 from knowledge_index import rebuild_vault_knowledge_indexes
+from conversation_summary import build_conversation_summary_record
 import memory_recall
-from memory_recall import format_results, load_recall_index, recall
+from memory_recall import (
+    format_results,
+    load_recall_index,
+    prepare_recall_index,
+    recall,
+    recall_conversation_summaries,
+    validate_recall_index,
+)
 from memory_schema import memory_revision, normalize_formal_record
 
 try:
@@ -21,6 +29,396 @@ except ModuleNotFoundError:
 
 
 class MemoryRecallTests(unittest.TestCase):
+    def test_conversation_summary_recall_covers_every_trusted_content_field(self):
+        anchors = {
+            "current_goal": "goalneedle",
+            "topics": ["topicneedle"],
+            "progress": ["progressneedle"],
+            "constraints": ["constraintneedle"],
+            "important_context": ["contextneedle"],
+            "open_items": ["openneedle"],
+            "summary": "summaryneedle",
+        }
+        summary = conversation_summary_record(
+            "summary-all-fields",
+            anchors.pop("summary"),
+            **anchors,
+        )
+        index = {
+            "schema_version": "2.0",
+            "units": [],
+            "conversation_summaries": [summary],
+            "conversation_summary_count": 1,
+        }
+
+        for anchor in (
+            "goalneedle",
+            "topicneedle",
+            "progressneedle",
+            "constraintneedle",
+            "contextneedle",
+            "openneedle",
+            "summaryneedle",
+        ):
+            with self.subTest(anchor=anchor):
+                results = recall_conversation_summaries(
+                    anchor,
+                    index,
+                    {"demo"},
+                )
+                self.assertEqual(
+                    [item["id"] for item in results],
+                    [summary["id"]],
+                )
+
+    def test_conversation_summary_recall_covers_last_allowed_list_items(self):
+        tail_anchors = {
+            "topics": "omegaqztp",
+            "progress": "betaxypr",
+            "constraints": "gammauvcs",
+            "important_context": "deltamnct",
+            "open_items": "epsilonop",
+        }
+        fields = {
+            field: [
+                *(f"{field}unique{index}" for index in range(7)),
+                anchor,
+            ]
+            for field, anchor in tail_anchors.items()
+        }
+        summary = conversation_summary_record(
+            "summary-tail-items",
+            "Tail item lexical coverage",
+            **fields,
+        )
+        index = {
+            "schema_version": "2.0",
+            "units": [],
+            "conversation_summaries": [summary],
+            "conversation_summary_count": 1,
+        }
+
+        self.assertLessEqual(len(summary["search_terms"]), 24)
+        self.assertNotIn("epsilonop", summary["search_terms"])
+        for anchor in tail_anchors.values():
+            with self.subTest(anchor=anchor):
+                results = recall_conversation_summaries(
+                    anchor,
+                    index,
+                    {"demo"},
+                )
+                self.assertEqual(
+                    [item["id"] for item in results],
+                    [summary["id"]],
+                )
+
+    def test_conversation_summary_recall_requires_concrete_lexical_content(self):
+        summary = conversation_summary_record(
+            "summary-concrete",
+            "用内容哈希绑定滚动摘要代次",
+            topics=["内容哈希", "代次绑定"],
+        )
+        index = {"schema_version": "2.0", "units": [], "conversation_summaries": [summary],
+                 "conversation_summary_count": 1}
+
+        self.assertEqual(
+            recall_conversation_summaries("给我最近的会话摘要", index, {"demo"}),
+            [],
+        )
+        self.assertEqual(
+            recall_conversation_summaries("我们之前聊了什么", index, {"demo"}),
+            [],
+        )
+        status = conversation_summary_record(
+            "summary-generic-status",
+            "The latest summary status remains active",
+            topics=["retrieval status"],
+        )
+        self.assertEqual(
+            recall_conversation_summaries(
+                "latest summary status",
+                {
+                    "schema_version": "2.0",
+                    "units": [],
+                    "conversation_summaries": [status],
+                    "conversation_summary_count": 1,
+                },
+                {"demo"},
+            ),
+            [],
+        )
+        english = conversation_summary_record(
+            "summary-type-only",
+            "Build deterministic summaries for long conversations",
+            topics=["conversation summaries"],
+        )
+        self.assertEqual(
+            recall_conversation_summaries(
+                "show summaries",
+                {
+                    "schema_version": "2.0",
+                    "units": [],
+                    "conversation_summaries": [english],
+                    "conversation_summary_count": 1,
+                },
+                {"demo"},
+            ),
+            [],
+        )
+        results = recall_conversation_summaries(
+            "内容哈希如何绑定摘要代次",
+            index,
+            {"demo"},
+        )
+        self.assertEqual([item["id"] for item in results], [summary["id"]])
+        english = conversation_summary_record(
+            "summary-english-domain",
+            "Quartzcheckpoint binds content hash generations",
+            topics=["quartzcheckpoint"],
+        )
+        english_results = recall_conversation_summaries(
+            "How does quartzcheckpoint bind generations?",
+            {
+                "schema_version": "2.0",
+                "units": [],
+                "conversation_summaries": [english],
+                "conversation_summary_count": 1,
+            },
+            {"demo"},
+        )
+        self.assertEqual(
+            [item["id"] for item in english_results],
+            [english["id"]],
+        )
+
+    def test_conversation_summary_generic_filter_preserves_domain_compounds(self):
+        generic = conversation_summary_record(
+            "summary-generic-language",
+            "Latest summary status overview and 最新会话摘要状态进度",
+            topics=["retrieval overview", "摘要更新"],
+        )
+        generic_index = {
+            "schema_version": "2.0",
+            "units": [],
+            "conversation_summaries": [generic],
+            "conversation_summary_count": 1,
+        }
+        for query in (
+            "latest summary status",
+            "show latest summary overview",
+            "最新会话摘要状态进度",
+            "请给我最近的会话摘要更新",
+        ):
+            with self.subTest(generic_query=query):
+                self.assertEqual(
+                    recall_conversation_summaries(
+                        query,
+                        generic_index,
+                        {"demo"},
+                    ),
+                    [],
+                )
+
+        concrete = conversation_summary_record(
+            "summary-concrete-language",
+            (
+                "状态机驱动进度条，信息论约束工作流；"
+                "statechart drives progressbar in a workflow"
+            ),
+            topics=[
+                "状态机",
+                "进度条",
+                "信息论",
+                "工作流",
+                "statechart",
+                "progressbar",
+                "workflow",
+            ],
+        )
+        concrete_index = {
+            "schema_version": "2.0",
+            "units": [],
+            "conversation_summaries": [concrete],
+            "conversation_summary_count": 1,
+        }
+        for query in (
+            "状态机摘要",
+            "进度条会话摘要",
+            "信息论上下文",
+            "工作流摘要",
+            "statechart summary",
+            "progressbar conversation summary",
+            "workflow summary",
+        ):
+            with self.subTest(concrete_query=query):
+                self.assertEqual(
+                    [
+                        item["id"]
+                        for item in recall_conversation_summaries(
+                            query,
+                            concrete_index,
+                            {"demo"},
+                        )
+                    ],
+                    [concrete["id"]],
+                )
+
+    def test_conversation_summary_recall_returns_at_most_one_isolated_result(self):
+        first = conversation_summary_record(
+            "summary-first",
+            "会话摘要使用独立词法通道",
+            topics=["独立词法通道"],
+        )
+        second = conversation_summary_record(
+            "summary-second",
+            "独立词法通道不能触发图谱扩展",
+            topics=["独立词法通道", "图谱隔离"],
+        )
+        index = {
+            "schema_version": "2.0",
+            "units": [],
+            "conversation_summaries": [first, second],
+            "conversation_summary_count": 2,
+            "experience_bundles": [],
+            "_graph": {
+                "nodes": [],
+                "edges": [
+                    {
+                        "source": first["id"],
+                        "target": second["id"],
+                        "relation": "related_to",
+                    }
+                ],
+            },
+        }
+
+        results = recall_conversation_summaries(
+            "独立词法通道图谱隔离",
+            index,
+            {"demo"},
+            limit=8,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["retrieval_channels"], ["conversation_summary"])
+        self.assertEqual(
+            set(results[0]["retrieval_evidence"]),
+            {"conversation_summary"},
+        )
+        self.assertEqual(results[0]["match_kind"], "conversation_summary")
+        self.assertNotIn("related_path", results[0])
+        self.assertNotIn("related_experience", results[0])
+
+    def test_conversation_summary_recall_enforces_allowed_projects(self):
+        demo = conversation_summary_record(
+            "summary-demo",
+            "隔离项目的滚动摘要",
+            topics=["项目隔离"],
+        )
+        other = conversation_summary_record(
+            "summary-other",
+            "隔离项目的滚动摘要",
+            project="other",
+            topics=["项目隔离"],
+        )
+        index = {
+            "schema_version": "2.0",
+            "units": [],
+            "conversation_summaries": [demo, other],
+            "conversation_summary_count": 2,
+        }
+
+        results = recall_conversation_summaries(
+            "项目隔离滚动摘要",
+            index,
+            {"other"},
+        )
+
+        self.assertEqual([item["project"] for item in results], ["other"])
+
+    def test_conversation_summary_collection_is_optional_but_strict_when_present(self):
+        validate_recall_index({"schema_version": "2.0", "units": []})
+        valid = conversation_summary_record(
+            "summary-validation",
+            "严格验证派生搜索词",
+            topics=["派生搜索词"],
+        )
+        poisoned = dict(valid)
+        poisoned["search_terms"] = [*valid["search_terms"], "caller-controlled-anchor"]
+        malformed = {
+            "schema_version": "2.0",
+            "units": [],
+            "conversation_summaries": [poisoned],
+            "conversation_summary_count": 1,
+        }
+
+        with self.assertRaisesRegex(ValueError, "conversation summary"):
+            validate_recall_index(malformed)
+        with self.assertRaisesRegex(ValueError, "conversation summary"):
+            recall_conversation_summaries(
+                "caller-controlled-anchor",
+                malformed,
+                {"demo"},
+            )
+
+    def test_conversation_summary_ids_cannot_collide_with_formal_units(self):
+        summary = conversation_summary_record(
+            "summary-id-collision",
+            "独立集合也必须共享 ID 命名空间",
+            topics=["ID 命名空间"],
+        )
+        index = {
+            "schema_version": "2.0",
+            "units": [{"id": summary["id"]}],
+            "conversation_summaries": [summary],
+            "conversation_summary_count": 1,
+        }
+
+        with self.assertRaisesRegex(ValueError, "collision"):
+            validate_recall_index(index)
+
+    def test_recall_rejects_duplicate_runtime_unit_ids(self):
+        matching = recall_unit(
+            "decision:duplicate",
+            "01-Projects/demo/Memory/decisions",
+            title="duplicateprobe matching record",
+            summary="duplicateprobe should identify this record",
+            terms=["duplicateprobe"],
+        )
+        substitute = recall_unit(
+            "decision:duplicate",
+            "01-Projects/demo/Memory/decisions",
+            title="unrelated substitute",
+            summary="this record must not inherit another record's score",
+            terms=["unrelated"],
+        )
+        index = {
+            "schema_version": "2.0",
+            "units": [matching, substitute],
+        }
+
+        with self.assertRaisesRegex(ValueError, "duplicate recall unit ID"):
+            validate_recall_index(index)
+        with self.assertRaisesRegex(ValueError, "duplicate recall unit ID"):
+            recall("duplicateprobe", index, project="demo")
+
+    def test_recall_recomputes_terms_from_revision_bound_fields(self):
+        poisoned = recall_unit(
+            "decision:term-poison",
+            "01-Projects/demo/Memory/decisions",
+            title="使用稳定字段生成召回词",
+            summary="派生索引字段不能改变正式记忆语义",
+            terms=["termspoison"],
+        )
+
+        results = recall(
+            "termspoison",
+            {"schema_version": "2.0", "units": [poisoned]},
+            project="demo",
+        )
+
+        self.assertEqual(results, [])
+
     def test_insight_inventory_and_concrete_exploration_are_content_safe(self):
         fusion = insight_unit(
             "insight:fusion",
@@ -103,7 +501,7 @@ class MemoryRecallTests(unittest.TestCase):
             self.assertIn("Obsidian Markdown", results[0]["title"])
             self.assertGreater(results[0]["score"], 0)
 
-    def test_recall_expands_to_memory_in_explicitly_linked_note(self):
+    def test_recall_does_not_expand_through_visual_note_links(self):
         index = {
             "schema_version": "2.0",
             "units": [
@@ -151,10 +549,100 @@ class MemoryRecallTests(unittest.TestCase):
             limit=5,
         )
 
-        self.assertEqual(results[0]["id"], "decision:direct")
-        linked = next(item for item in results if item["id"] == "error:linked")
-        self.assertGreater(linked["score"], 0)
-        self.assertEqual(linked["match_kind"], "graph")
+        self.assertEqual(
+            [item["id"] for item in results],
+            ["decision:direct"],
+        )
+
+    def test_recall_does_not_expand_to_unrelated_memory_in_same_aggregate_note(self):
+        direct = recall_unit(
+            "decision:direct",
+            "01-Projects/demo/Memory/decisions",
+            title="使用 contentanchor 作为召回入口",
+            summary="contentanchor 只命中这一条正式决定",
+            terms=["contentanchor", "召回", "入口"],
+        )
+        unrelated = recall_unit(
+            "decision:unrelated",
+            "01-Projects/demo/Memory/decisions",
+            title="另一个无关决定",
+            summary="这条记录只是碰巧存放在同一个聚合笔记",
+            terms=["无关", "聚合"],
+        )
+        index = {
+            "schema_version": "2.0",
+            "units": [direct, unrelated],
+            "_graph": {
+                "edges": [
+                    {
+                        "source": direct["id"],
+                        "target": direct["source_note"],
+                        "relation": "recorded_in",
+                    },
+                    {
+                        "source": unrelated["id"],
+                        "target": unrelated["source_note"],
+                        "relation": "recorded_in",
+                    },
+                ]
+            },
+        }
+
+        results = recall(
+            "contentanchor 召回入口",
+            index,
+            project="demo",
+            limit=8,
+        )
+
+        self.assertEqual([item["id"] for item in results], [direct["id"]])
+
+    def test_prepare_recall_index_discards_embedded_runtime_metadata(self):
+        direct = recall_unit(
+            "decision:direct",
+            "01-Projects/demo/Memory/decisions",
+            title="使用 reservedprobe 验证索引",
+            summary="reservedprobe 只允许正式索引字段",
+            terms=["reservedprobe", "索引"],
+        )
+        unrelated = recall_unit(
+            "error:forged",
+            "01-Projects/demo/Memory/pitfalls",
+            memory_type="error",
+            title="伪造图谱结果",
+            summary="不应从 recall-index 内嵌私有字段进入召回",
+            terms=["伪造"],
+        )
+        data = {
+            "schema_version": "2.0",
+            "units": [direct, unrelated],
+            "_graph": {
+                "edges": [
+                    {
+                        "source": direct["source_note"],
+                        "target": unrelated["source_note"],
+                        "relation": "links_to",
+                    }
+                ]
+            },
+            "_graph_validated": True,
+            "_graph_quality": {"valid": True},
+            "_path": "/forged/index.json",
+        }
+
+        prepared = prepare_recall_index(data, path="/trusted/index.json")
+        results = recall(
+            "reservedprobe 索引",
+            prepared,
+            project="demo",
+            limit=8,
+        )
+
+        self.assertNotIn("_graph", prepared)
+        self.assertNotIn("_graph_validated", prepared)
+        self.assertNotIn("_graph_quality", prepared)
+        self.assertEqual(prepared["_path"], "/trusted/index.json")
+        self.assertEqual([item["id"] for item in results], [direct["id"]])
 
     def test_project_filter_excludes_other_projects(self):
         with tempfile.TemporaryDirectory() as vault:
@@ -301,6 +789,51 @@ class MemoryRecallTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "schema|units"):
                         load_recall_index(path)
 
+    def test_load_recall_index_rejects_legacy_graph_at_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            index_path = os.path.join(tmp, "recall-index.json")
+            graph_path = os.path.join(tmp, "memory-graph.json")
+            with open(index_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": "2.0",
+                        "generation_id": "runtime-generation",
+                        "units": [],
+                    },
+                    handle,
+                )
+            with open(graph_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": "2.0",
+                        "nodes": [],
+                        "edges": [],
+                    },
+                    handle,
+                )
+
+            with self.assertRaisesRegex(ValueError, "schema must be 3.0"):
+                load_recall_index(index_path)
+
+    def test_load_recall_index_rejects_non_object_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            index_path = os.path.join(tmp, "recall-index.json")
+            graph_path = os.path.join(tmp, "memory-graph.json")
+            with open(index_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": "2.0",
+                        "generation_id": "runtime-generation",
+                        "units": [],
+                    },
+                    handle,
+                )
+            with open(graph_path, "w", encoding="utf-8") as handle:
+                json.dump([], handle)
+
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                load_recall_index(index_path)
+
     def test_recall_rejects_incomplete_or_forged_runtime_units(self):
         valid = recall_unit(
             "decision:valid-runtime",
@@ -373,6 +906,25 @@ class MemoryRecallTests(unittest.TestCase):
         )
 
         self.assertEqual([item["id"] for item in results], [unit["id"]])
+
+    def test_explicit_project_cannot_bypass_allowed_projects(self):
+        beta = recall_unit(
+            "decision:beta-private",
+            "01-Projects/beta/Memory/decisions",
+            title="allowlistprobe beta 私有决定",
+            summary="allowlistprobe 不得跨越显式项目授权边界",
+            terms=["allowlistprobe", "授权"],
+            project="beta",
+        )
+
+        results = recall(
+            "allowlistprobe 授权",
+            {"schema_version": "2.0", "units": [beta]},
+            project="beta",
+            allowed_projects={"alpha"},
+        )
+
+        self.assertEqual(results, [])
 
     def test_equal_score_results_have_deterministic_order(self):
         first = recall_unit(
@@ -691,16 +1243,14 @@ class MemoryRecallTests(unittest.TestCase):
             summary="修复元数据解析",
             terms=["元数据", "解析"],
         )
+        graph = semantic_graph(
+            [direct, linked],
+            [semantic_edge(direct, "depends_on", linked)],
+        )
         index = {
             "schema_version": "2.0",
             "units": [linked, direct],
-            "_graph": {
-                "edges": [
-                    {"source": direct["id"], "target": direct["source_note"], "relation": "recorded_in"},
-                    {"source": direct["source_note"], "target": linked["source_note"], "relation": "links_to"},
-                    {"source": linked["id"], "target": linked["source_note"], "relation": "recorded_in"},
-                ]
-            },
+            "_graph": graph,
         }
 
         results = recall("Obsidian 中文 主存储", index, project="demo")
@@ -711,7 +1261,7 @@ class MemoryRecallTests(unittest.TestCase):
         self.assertEqual(by_id[linked["id"]]["retrieval_channels"], ["graph"])
         self.assertEqual(
             by_id[linked["id"]]["retrieval_evidence"]["graph"]["via"],
-            linked["source_note"],
+            "depends_on",
         )
 
     def test_hybrid_fusion_rewards_multi_channel_match(self):
@@ -764,6 +1314,224 @@ class MemoryRecallTests(unittest.TestCase):
         rendered = format_results(results)
 
         self.assertIn("channels: lexical, structured", rendered)
+
+    def test_semantic_graph_recall_uses_at_most_two_revision_bound_hops(self):
+        direct = recall_unit(
+            "decision:graph-anchor",
+            "01-Projects/demo/Memory/decisions",
+            title="使用关系合同约束记忆图谱",
+            summary="graphcontract 图谱关系必须有明确类型",
+            terms=["graphcontract", "图谱", "关系", "合同"],
+        )
+        middle = recall_unit(
+            "workflow:graph-validator",
+            "05-Agent-Memory/workflow-rules",
+            memory_type="workflow",
+            title="写入前验证关系",
+            summary="每条边写入前检查类型和来源",
+            terms=["验证", "边", "来源"],
+        )
+        target = recall_unit(
+            "error:graph-provenance",
+            "01-Projects/demo/Memory/pitfalls",
+            memory_type="error",
+            title="关系缺少来源版本",
+            summary="补齐 revision 绑定后恢复可信召回",
+            terms=["revision", "来源", "可信"],
+        )
+        too_far = recall_unit(
+            "personal:graph-third-hop",
+            "05-Agent-Memory/personal-memory",
+            memory_type="preference",
+            title="第三跳无关偏好",
+            summary="不应被两跳召回扩展返回",
+            terms=["第三跳", "无关"],
+        )
+
+        units = [direct, middle, target, too_far]
+        graph = semantic_graph(
+            units,
+            [
+                semantic_edge(
+                    direct,
+                    "supports",
+                    middle,
+                ),
+                semantic_edge(
+                    middle,
+                    "depends_on",
+                    target,
+                ),
+                semantic_edge(
+                    target,
+                    "supports",
+                    too_far,
+                ),
+            ],
+        )
+
+        results = recall(
+            "graphcontract 图谱关系合同",
+            {
+                "schema_version": "2.0",
+                "units": units,
+                "_graph": graph,
+            },
+            project="demo",
+            limit=8,
+        )
+
+        by_id = {item["id"]: item for item in results}
+        self.assertIn(middle["id"], by_id)
+        self.assertIn(target["id"], by_id)
+        self.assertNotIn(too_far["id"], by_id)
+        self.assertEqual(
+            [step["relation"] for step in by_id[target["id"]]["related_path"]],
+            ["supports", "depends_on"],
+        )
+        self.assertIn("关系路径", by_id[target["id"]]["why_recalled"])
+
+    def test_high_confidence_semantic_edge_survives_runtime_relative_gate(self):
+        direct = recall_unit(
+            "decision:semantic-anchor",
+            "01-Projects/demo/Memory/decisions",
+            title="采用 semanticanchor 关系合同",
+            summary="semanticanchor 建立直接内容锚点",
+            terms=["semanticanchor", "关系", "合同"],
+        )
+        related = recall_unit(
+            "workflow:semantic-related",
+            "05-Agent-Memory/workflow-rules",
+            memory_type="workflow",
+            title="写入前验证图谱证据",
+            summary="显式 supports 关系应参与运行时召回",
+            terms=["图谱", "证据"],
+        )
+        graph = semantic_graph(
+            [direct, related],
+            [
+                semantic_edge(
+                    direct,
+                    "supports",
+                    related,
+                    confidence=1.0,
+                )
+            ],
+        )
+
+        results = recall(
+            "semanticanchor 关系合同",
+            {
+                "schema_version": "2.0",
+                "units": [direct, related],
+                "_graph": graph,
+            },
+            project="demo",
+            limit=8,
+            relative_score_threshold=0.8,
+        )
+
+        self.assertEqual(
+            {item["id"] for item in results},
+            {direct["id"], related["id"]},
+        )
+        by_id = {item["id"]: item for item in results}
+        self.assertEqual(by_id[related["id"]]["retrieval_channels"], ["graph"])
+        self.assertEqual(by_id[related["id"]]["related_seed"], direct["id"])
+
+    def test_semantic_recall_selects_the_strongest_content_anchor(self):
+        weak = recall_unit(
+            "decision:a-weak-anchor",
+            "01-Projects/demo/Memory/decisions",
+            title="multiseedanchor weak",
+            summary="only the common anchor matches",
+            terms=["multiseedanchor"],
+        )
+        strong = recall_unit(
+            "decision:z-strong-anchor",
+            "01-Projects/demo/Memory/decisions",
+            title="multiseedanchor precise contract",
+            summary="multiseedanchor precise contract is the direct source",
+            terms=["multiseedanchor", "precise", "contract"],
+        )
+        target = recall_unit(
+            "workflow:shared-target",
+            "05-Agent-Memory/workflow-rules",
+            memory_type="workflow",
+            title="验证共享关系目标",
+            summary="只通过显式 supports 关系进入召回",
+            terms=["关系", "目标"],
+        )
+        graph = semantic_graph(
+            [weak, strong, target],
+            [
+                semantic_edge(weak, "supports", target),
+                semantic_edge(strong, "supports", target),
+            ],
+        )
+
+        results = recall(
+            "multiseedanchor precise contract",
+            {
+                "schema_version": "2.0",
+                "units": [weak, strong, target],
+                "_graph": graph,
+            },
+            project="demo",
+            relative_score_threshold=0.8,
+        )
+
+        by_id = {item["id"]: item for item in results}
+        self.assertIn(target["id"], by_id)
+        self.assertEqual(by_id[target["id"]]["related_seed"], strong["id"])
+
+    def test_semantic_recall_cannot_traverse_disallowed_project(self):
+        seed = recall_unit(
+            "decision:alpha-seed",
+            "01-Projects/alpha/Memory/decisions",
+            title="isolationprobe 项目隔离入口",
+            summary="isolationprobe 只允许 alpha 项目召回",
+            terms=["isolationprobe", "隔离"],
+            project="alpha",
+        )
+        bridge = recall_unit(
+            "workflow:beta-secret-bridge",
+            "05-Agent-Memory/workflow-rules",
+            memory_type="workflow",
+            title="beta 私有中间关系",
+            summary="未授权项目不能成为图遍历中间节点",
+            terms=["beta", "私有"],
+            project="beta",
+        )
+        target = recall_unit(
+            "workflow:alpha-target",
+            "05-Agent-Memory/workflow-rules",
+            memory_type="workflow",
+            title="alpha 关系目标",
+            summary="只有穿过 beta 项目才能到达",
+            terms=["alpha", "目标"],
+            project="alpha",
+        )
+        graph = semantic_graph(
+            [seed, bridge, target],
+            [
+                semantic_edge(seed, "supports", bridge),
+                semantic_edge(bridge, "supports", target),
+            ],
+        )
+
+        results = recall(
+            "isolationprobe 项目隔离入口",
+            {
+                "schema_version": "2.0",
+                "units": [seed, bridge, target],
+                "_graph": graph,
+            },
+            project="alpha",
+            allowed_projects={"alpha"},
+        )
+
+        self.assertEqual([item["id"] for item in results], [seed["id"]])
 
     def test_results_explain_why_they_were_recalled_and_their_authority(self):
         from memory_schema import memory_revision
@@ -897,6 +1665,109 @@ def recall_unit(
     }
     record["revision"] = memory_revision(record)
     return record
+
+
+def conversation_summary_record(
+    session_id,
+    summary,
+    *,
+    project="demo",
+    topics=None,
+    current_goal="完成滚动会话摘要召回",
+    progress=None,
+    constraints=None,
+    important_context=None,
+    open_items=None,
+):
+    record = build_conversation_summary_record(
+        {
+            "session_id": session_id,
+            "date": "2026-07-31",
+            "ai_title": "滚动会话摘要",
+            "source_note": (
+                f"01-Projects/{project}/Memory/sessions/{session_id}"
+            ),
+            "conversation_summary": {
+                "project": project,
+                "current_goal": current_goal,
+                "topics": list(topics or ["滚动摘要"]),
+                "progress": list(progress or []),
+                "constraints": list(constraints or []),
+                "important_context": list(important_context or []),
+                "open_items": list(open_items or []),
+                "summary": summary,
+            },
+        }
+    )
+    if record is None:
+        raise AssertionError("conversation summary fixture must be valid")
+    return record
+
+
+def semantic_edge(source, relation, target, *, confidence=1.0):
+    return {
+        "source": source["id"],
+        "target": target["id"],
+        "relation": relation,
+        "confidence": confidence,
+        "evidence": [
+            {
+                "source_ref": source["source_refs"][0],
+                "source_revision": source["revision"],
+                "observed_at": "2026-07-26",
+                "derivation": "formal-record",
+            }
+        ],
+    }
+
+
+def semantic_graph(units, edges):
+    units_by_id = {unit["id"]: unit for unit in units}
+    relation_fields = {
+        "contradicts": "contradicts",
+        "depends_on": "requires",
+        "operationalized_as": "operationalized_as",
+        "related_to": "related_to",
+        "superseded_by": "superseded_by",
+        "supports": "supports",
+    }
+    for edge in edges:
+        source = units_by_id[edge["source"]]
+        field = relation_fields[edge["relation"]]
+        if field == "superseded_by":
+            source[field] = edge["target"]
+        else:
+            values = source.setdefault(field, [])
+            if edge["target"] not in values:
+                values.append(edge["target"])
+    for unit in units:
+        unit["revision"] = memory_revision(unit)
+    for edge in edges:
+        source = units_by_id[edge["source"]]
+        for evidence in edge["evidence"]:
+            evidence["source_revision"] = source["revision"]
+    return {
+        "schema_version": "3.0",
+        "generated_by": "test",
+        "generated_at": "2026-07-26T10:00:00+08:00",
+        "generation_id": "test-generation",
+        "nodes": [
+            {
+                "id": unit["id"],
+                "type": "memory",
+                "kind": unit["type"],
+                "label": unit["title"],
+                "path": unit["path"],
+                "project": unit["project"],
+                "date": unit["date"],
+                "revision": unit["revision"],
+                "source_refs": unit["source_refs"],
+                "resolved": True,
+            }
+            for unit in units
+        ],
+        "edges": edges,
+    }
 
 
 def insight_unit(

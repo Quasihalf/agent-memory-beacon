@@ -60,6 +60,12 @@ INSIGHT_LIST_FIELDS = (
     "related_to",
 )
 INSIGHT_RELATION_FIELDS = ("supports", "operationalized_as", "related_to")
+MEMORY_RELATION_FIELDS = (
+    "supports",
+    "operationalized_as",
+    "related_to",
+    "contradicts",
+)
 DEFAULT_PROJECT_ALIASES = {
     "github-obsidian-knowledge-brain": "agent-memory-beacon",
     "obsidian-knowledge-brain": "agent-memory-beacon",
@@ -204,6 +210,24 @@ def _memory_revision_fields(record, *, operational):
                 ),
             ]
         )
+    relation_payload = {
+        key: sorted(str(item).strip() for item in record.get(key) or [])
+        for key in MEMORY_RELATION_FIELDS
+        if record.get(key)
+        and (record.get("type") != "insight" or key not in INSIGHT_RELATION_FIELDS)
+    }
+    if relation_payload:
+        fields.extend(
+            [
+                "semantic-relations-v1",
+                json.dumps(
+                    relation_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ]
+        )
     authority = authority_revision_payload(record)
     if authority:
         fields.extend(
@@ -243,6 +267,25 @@ def normalize_requires(value, memory_id=""):
             raise ValueError("requires contains a duplicate memory ID")
         normalized.append(dependency)
     return sorted(normalized)
+
+
+def normalize_memory_relations(value, memory_id="", field="relation"):
+    """Return a deterministic list of validated declared memory targets."""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list of memory IDs")
+    normalized = []
+    for item in value:
+        target = str(item or "").strip()
+        if not is_valid_memory_id(target):
+            raise ValueError(f"{field} contains an invalid memory ID")
+        if target == str(memory_id or "").strip():
+            raise ValueError(f"memory cannot declare {field} to itself")
+        if target in normalized:
+            raise ValueError(f"{field} contains a duplicate memory ID")
+        normalized.append(target)
+    return normalized
 
 
 def normalize_expires_at(value):
@@ -310,6 +353,21 @@ def _valid_lifecycle_metadata(record):
     return True
 
 
+def _valid_relation_metadata(record):
+    for field in MEMORY_RELATION_FIELDS:
+        try:
+            normalized = normalize_memory_relations(
+                record.get(field),
+                memory_id=record.get("id", ""),
+                field=field,
+            )
+        except ValueError:
+            return False
+        if field in record and record.get(field) != normalized:
+            return False
+    return True
+
+
 def _valid_authority_metadata(record):
     try:
         normalized = normalize_authority_metadata(record)
@@ -347,6 +405,8 @@ def is_valid_formal_project_record(
     if not all(_nonempty_string(record.get(key)) for key in ("id", "revision")):
         return False
     if not _valid_lifecycle_metadata(record):
+        return False
+    if not _valid_relation_metadata(record):
         return False
     if not _valid_authority_metadata(record):
         return False
@@ -387,6 +447,11 @@ def is_valid_formal_project_record(
             "superseded_by": record.get("superseded_by", ""),
             "requires": record.get("requires") or [],
             "expires_at": record.get("expires_at", ""),
+            **{
+                key: record.get(key) or []
+                for key in MEMORY_RELATION_FIELDS
+                if record.get(key)
+            },
             **normalize_authority_metadata(record),
         }
     )
@@ -439,7 +504,7 @@ def formal_memory_update_allowed(content, memory_id):
 
 
 def active_formal_lifecycle_metadata(content, memory_id, kind):
-    """Return validated lifecycle metadata for one active formal section."""
+    """Return validated metadata that learner rewrites must preserve."""
     if not is_valid_memory_id(memory_id):
         return None
     marker = f"- id: `{memory_id}`"
@@ -461,6 +526,11 @@ def active_formal_lifecycle_metadata(content, memory_id, kind):
     return {
         **({"requires": list(record["requires"])} if record.get("requires") else {}),
         **({"expires_at": record["expires_at"]} if record.get("expires_at") else {}),
+        **{
+            key: list(record[key])
+            for key in MEMORY_RELATION_FIELDS
+            if record.get(key)
+        },
     }
 
 
@@ -503,6 +573,21 @@ def _parse_formal_section(title, section, kind, verify_revision, active_only):
     requires = _formal_id_list(section, "requires")
     if requires is None:
         return None
+    relations = {}
+    for key in MEMORY_RELATION_FIELDS:
+        values = _formal_id_list(section, key)
+        if values is None:
+            return None
+        try:
+            values = normalize_memory_relations(
+                values,
+                memory_id=fields["id"],
+                field=key,
+            )
+        except ValueError:
+            return None
+        if values:
+            relations[key] = values
     expires_at = _raw_markdown_field(section, "expires_at")
     try:
         requires = normalize_requires(requires, memory_id=fields["id"])
@@ -606,12 +691,6 @@ def _parse_formal_section(title, section, kind, verify_revision, active_only):
         novelty = _raw_markdown_section(section, "Novelty")
         transfer = _raw_markdown_list_section(section, "Transfer")
         boundary = _raw_markdown_section(section, "Boundary")
-        relations = {}
-        for key in INSIGHT_RELATION_FIELDS:
-            values = _formal_id_list(section, key)
-            if values is None or any(not is_valid_memory_id(item) for item in values):
-                return None
-            relations[key] = values
         try:
             confidence = float(raw_confidence)
         except (TypeError, ValueError):
@@ -634,7 +713,6 @@ def _parse_formal_section(title, section, kind, verify_revision, active_only):
                 "novelty": novelty,
                 "transfer": transfer,
                 "boundary": boundary,
-                **relations,
             }
         )
     else:
@@ -653,6 +731,7 @@ def _parse_formal_section(title, section, kind, verify_revision, active_only):
         "expires_at": expires_at,
         **authority,
         **metadata,
+        **relations,
     }
     expected_revision = memory_revision(revision_record)
     compatible_revisions = {expected_revision}
@@ -677,6 +756,7 @@ def _parse_formal_section(title, section, kind, verify_revision, active_only):
         **({"expired_reason": expired_reason} if expired_reason else {}),
         **authority,
         **metadata,
+        **relations,
     }
 
 
@@ -876,15 +956,22 @@ def normalize_formal_record(
         for key in INSIGHT_SCALAR_FIELDS:
             if raw.get(key):
                 normalized[key] = str(raw[key]).strip()
-        for key in INSIGHT_LIST_FIELDS:
-            values = _normalize_string_list(raw.get(key), key)
-            if values:
-                normalized[key] = values
+        transfer = _normalize_string_list(raw.get("transfer"), "transfer")
+        if transfer:
+            normalized["transfer"] = transfer
         if raw.get("confidence") not in (None, ""):
             confidence = float(raw["confidence"])
             if not 0 <= confidence <= 1:
                 raise ValueError("confidence must be between 0 and 1")
             normalized["confidence"] = confidence
+    for key in MEMORY_RELATION_FIELDS:
+        values = normalize_memory_relations(
+            raw.get(key),
+            memory_id=memory_id,
+            field=key,
+        )
+        if values:
+            normalized[key] = values
     if requires:
         normalized["requires"] = requires
     if expires_at:
@@ -910,6 +997,9 @@ def formal_identity_key(record):
                 json.dumps(record.get(key) or [], ensure_ascii=False)
             )
             for key in INSIGHT_LIST_FIELDS
+        ),
+        normalize_fact_text(
+            json.dumps(record.get("contradicts") or [], ensure_ascii=False)
         ),
     )
 
@@ -994,6 +1084,8 @@ def is_valid_runtime_record(record):
     if not is_valid_memory_id(record.get("id")):
         return False
     if not _valid_lifecycle_metadata(record):
+        return False
+    if not _valid_relation_metadata(record):
         return False
     if not _valid_authority_metadata(record):
         return False
@@ -1122,12 +1214,6 @@ def _valid_insight_metadata(record):
         and all(_nonempty_string(item) for item in transfer)
     ):
         return False
-    for key in INSIGHT_RELATION_FIELDS:
-        values = record.get(key) or []
-        if not isinstance(values, list) or any(
-            not is_valid_memory_id(item) for item in values
-        ):
-            return False
     return True
 
 

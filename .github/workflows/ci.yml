@@ -51,3 +51,51 @@ jobs:
         run: python -m pip_audit -r scripts/requirements.lock
       - name: Scan for high-severity Python issues
         run: bandit -q -lll -r scripts -x scripts/.venv
+
+  sync-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: scripts/requirements.lock
+      - name: Install runtime dependencies
+        run: python -m pip install -r scripts/requirements.lock
+      - name: Check installed dependencies
+        run: python -m pip check
+      - name: Compile synchronization sources
+        run: python -m compileall -q scripts tests
+      - name: Run Windows synchronization test matrix
+        run: >-
+          python -B -m unittest
+          tests.test_beacon_sync_protocol
+          tests.test_beacon_sync_producer
+          tests.test_beacon_sync_reducer
+          tests.test_beacon_sync_snapshot
+          tests.test_beacon_sync_cli
+          tests.test_config
+          tests.test_install_beacon_sync
+          tests.test_install_runtime
+          tests.test_beacon_sync_end_to_end
+          tests.test_beacon_sync_windows
+          -v
+      - name: Verify movable Windows runtime release
+        env:
+          AGENT_MEMORY_BEACON_VERIFY_RELEASE: "1"
+        run: >-
+          python -B -m unittest
+          tests.test_beacon_sync_windows.WindowsRuntimeReleaseIntegrationTests
+          -v
+      - name: Verify Windows Task transaction
+        env:
+          AGENT_MEMORY_BEACON_VERIFY_TASK: "1"
+        run: >-
+          python -B -m unittest
+          tests.test_beacon_sync_windows.WindowsTaskIntegrationTests
+          -v

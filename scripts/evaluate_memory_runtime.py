@@ -25,6 +25,11 @@ from memory_runtime import (
     retrieve_memories,
     topic_signature,
 )
+from memory_graph import (
+    GRAPH_SCHEMA_VERSION,
+    semantic_memory_paths,
+    validate_memory_graph,
+)
 from memory_schema import RUNTIME_SCHEMA_VERSION, memory_revision
 from memory_recall import validate_recall_index
 
@@ -32,11 +37,13 @@ from memory_recall import validate_recall_index
 FIXTURE_NOW = datetime(2026, 7, 13, 8, 0, tzinfo=timezone(timedelta(hours=8)))
 FIXTURE_INDEX_VERSION = (100, 200, 300, 400)
 MAX_LONG_TASK_INJECTIONS = 19
-FIXTURE_CASE_SCHEMA_VERSION = "1.2"
+FIXTURE_CASE_SCHEMA_VERSION = "1.4"
 # Append a new entry when intentionally changing the evaluated assertion baseline.
 ASSERTION_CONTRACT_BASELINES = {
     1: "78c4eade685a8554decb051930065593085849b1f41279e97fe2aa3c03298702",
     2: "75c7608a2f0a16e84de12c92e0518f7962b3529fe41ed63bed0837145777f4ca",
+    3: "af58d0603dc7e246c5677ee1f0526bde521952a99dd241325d8ee84ce9740233",
+    4: "61c56e94ece2fb120f817d99fef2bc1b8d780014319eeb339f1da92160631306",
 }
 CURRENT_ASSERTION_CONTRACT_VERSION = max(ASSERTION_CONTRACT_BASELINES)
 REQUIRED_RETRIEVAL_CASE_IDS = frozenset(
@@ -59,6 +66,8 @@ REQUIRED_RETRIEVAL_CASE_IDS = frozenset(
         "insight-ordinary-suppressed",
         "insight-ambiguous-suppressed",
         "insight-inventory-safe",
+        "graph-v3-semantic-paths",
+        "conversation-summary-context",
     }
 )
 REQUIRED_TRIGGER_CASE_IDS = frozenset(
@@ -103,13 +112,20 @@ def load_fixtures(fixture_dir):
     validate_recall_index(index)
     if index.get("unit_count") != len(index.get("units", [])):
         raise ValueError("fixture index unit_count does not match units")
-    if graph.get("schema_version") != RUNTIME_SCHEMA_VERSION:
+    if graph.get("schema_version") != GRAPH_SCHEMA_VERSION:
         raise ValueError("fixture graph schema is incompatible")
+    validate_memory_graph(
+        graph,
+        index.get("units"),
+        allow_legacy=False,
+        expected_generation_id=index.get("generation_id", ""),
+    )
     if cases.get("schema_version") != FIXTURE_CASE_SCHEMA_VERSION:
         raise ValueError("fixture case schema is incompatible")
     validate_case_manifest(cases)
     runtime_index = copy.deepcopy(index)
     runtime_index["_graph"] = graph
+    runtime_index["_graph_validated"] = True
     return {"index": runtime_index, "graph": graph, "cases": cases}
 
 
@@ -322,11 +338,7 @@ def simulate_long_task(fixtures):
     by_id = {unit["id"]: copy.deepcopy(unit) for unit in fixtures["index"]["units"]}
     active_ids = list(long_case["base_ids"])
     active_ids.extend(["preference:chinese", "skill:humanizer"])
-    index = {
-        "schema_version": RUNTIME_SCHEMA_VERSION,
-        "units": [copy.deepcopy(by_id[memory_id]) for memory_id in active_ids],
-        "_graph": fixtures["graph"],
-    }
+    index = _index_for_ids(by_id, active_ids, fixtures["graph"])
     index_store = MutableIndexStore(index)
     injection_count = 0
     silent_count = 0
@@ -430,7 +442,9 @@ def evaluate_fixture_dir(fixture_dir):
     fixtures = load_fixtures(fixture_dir)
     case_metrics = evaluate_cases(fixtures)
     long_task = simulate_long_task(fixtures)
+    graph_scale = evaluate_graph_scale()
     failures = list(case_metrics["case_failures"])
+    failures.extend(graph_scale["failures"])
     if not long_task["new_memory_seen"]:
         failures.append("long-task:new-memory-not-seen")
     if not long_task["changed_revision_seen"]:
@@ -462,6 +476,9 @@ def evaluate_fixture_dir(fixture_dir):
             ),
             3,
         ),
+        "graph_scale_p95_ms": round(graph_scale["p95_ms"], 3),
+        "graph_scale_nodes": graph_scale["nodes"],
+        "graph_scale_edges": graph_scale["edges"],
         "max_estimated_tokens": case_metrics["max_estimated_tokens"],
         "case_failures": sorted(failures),
         "long_task": {
@@ -484,12 +501,124 @@ def report_passes(report):
         and report.get("deleted_residuals") == 0
         and report.get("no_trigger_p95_ms", float("inf")) <= 100
         and report.get("recall_p95_ms", float("inf")) <= 500
+        and report.get("graph_scale_p95_ms", float("inf")) <= 500
         and report.get("max_estimated_tokens", float("inf")) <= 1500
         and (report.get("long_task") or {}).get(
             "injection_count", float("inf")
         ) <= MAX_LONG_TASK_INJECTIONS
         and not report.get("case_failures")
     )
+
+
+def evaluate_graph_scale():
+    """Exercise bounded semantic traversal at the current production scale."""
+    node_count = 1600
+    generation_id = "runtime-scale-fixture"
+    units = []
+    nodes = []
+    revisions = {}
+    for index in range(node_count):
+        memory_id = f"decision:scale-{index}"
+        revision = hashlib.sha256(memory_id.encode("utf-8")).hexdigest()
+        source_ref = f"source:scale-{index}"
+        revisions[memory_id] = revision
+        units.append(
+            {
+                "id": memory_id,
+                "type": "decision",
+                "revision": revision,
+                "requires": [],
+            }
+        )
+        nodes.append(
+            {
+                "id": memory_id,
+                "type": "memory",
+                "kind": "decision",
+                "label": memory_id,
+                "path": "01-Projects/scale/Memory/decisions",
+                "project": "scale",
+                "date": "2026-07-26",
+                "revision": revision,
+                "source_refs": [source_ref],
+                "resolved": True,
+            }
+        )
+
+    edges = []
+    for offset in (1, 7, 31, 127):
+        for index in range(node_count):
+            source = f"decision:scale-{index}"
+            target = f"decision:scale-{(index + offset) % node_count}"
+            units[index]["requires"].append(target)
+            edges.append(_scale_edge(source, target, revisions[source], index))
+    for index in range(200):
+        source = f"decision:scale-{index}"
+        target = f"decision:scale-{(index + 257) % node_count}"
+        units[index]["requires"].append(target)
+        edges.append(_scale_edge(source, target, revisions[source], index))
+
+    graph = {
+        "schema_version": GRAPH_SCHEMA_VERSION,
+        "generated_by": "evaluate_memory_runtime.py",
+        "generated_at": FIXTURE_NOW.isoformat(),
+        "generation_id": generation_id,
+        "nodes": nodes,
+        "edges": edges,
+    }
+    validate_memory_graph(
+        graph,
+        units,
+        allow_legacy=False,
+        expected_generation_id=generation_id,
+    )
+
+    durations = []
+    result = {}
+    allowed_ids = {unit["id"] for unit in units}
+    for _ in range(5):
+        started = time.perf_counter()
+        result = semantic_memory_paths(
+            graph,
+            ["decision:scale-0"],
+            units,
+            max_hops=2,
+            validated=True,
+            allowed_node_ids=allowed_ids,
+            seed_scores={"decision:scale-0": 100},
+        )
+        durations.append((time.perf_counter() - started) * 1000)
+
+    failures = []
+    if "decision:scale-1" not in result:
+        failures.append("graph-scale:one-hop-missing")
+    if "decision:scale-2" not in result:
+        failures.append("graph-scale:two-hop-missing")
+    if any(len(item.get("path") or []) > 2 for item in result.values()):
+        failures.append("graph-scale:hop-bound-exceeded")
+    return {
+        "nodes": len(nodes),
+        "edges": len(edges),
+        "p95_ms": _percentile_95(durations),
+        "failures": failures,
+    }
+
+
+def _scale_edge(source, target, revision, index):
+    return {
+        "source": source,
+        "target": target,
+        "relation": "depends_on",
+        "confidence": 1.0,
+        "evidence": [
+            {
+                "source_ref": f"source:scale-{index}",
+                "source_revision": revision,
+                "observed_at": "2026-07-26",
+                "derivation": "scale-fixture",
+            }
+        ],
+    }
 
 
 def _evaluate_trigger_cases(cases, policy):
@@ -560,11 +689,81 @@ def _evaluate_trigger_cases(cases, policy):
 
 
 def _index_for_ids(by_id, ids, graph):
-    return {
+    units = [copy.deepcopy(by_id[memory_id]) for memory_id in ids]
+    generation_id = hashlib.sha256(
+        json.dumps(
+            {
+                "base_generation_id": str(graph.get("generation_id") or ""),
+                "units": units,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    selected_ids = {unit["id"] for unit in units}
+    unit_by_id = {unit["id"]: unit for unit in units}
+    snapshot = copy.deepcopy(graph)
+    nodes = []
+    included_node_ids = set()
+    for node in snapshot.get("nodes") or []:
+        node_id = str(node.get("id") or "")
+        if node.get("type") == "memory" and node_id not in selected_ids:
+            continue
+        if node_id in unit_by_id:
+            unit = unit_by_id[node_id]
+            source_refs = list(unit.get("source_refs") or [])
+            source_note = str(unit.get("source_note") or "")
+            if source_note and source_note not in source_refs:
+                source_refs.append(source_note)
+            node.update(
+                {
+                    "kind": unit.get("type", ""),
+                    "label": unit.get("title", node_id),
+                    "path": unit.get("path", ""),
+                    "project": unit.get("project", ""),
+                    "date": unit.get("date", ""),
+                    "revision": unit.get("revision", ""),
+                    "source_refs": sorted(source_refs),
+                    "resolved": True,
+                }
+            )
+        nodes.append(node)
+        included_node_ids.add(node_id)
+
+    edges = []
+    for edge in snapshot.get("edges") or []:
+        if (
+            edge.get("source") not in included_node_ids
+            or edge.get("target") not in included_node_ids
+        ):
+            continue
+        source_unit = unit_by_id.get(edge.get("source"))
+        if source_unit:
+            for evidence in edge.get("evidence") or []:
+                evidence["source_revision"] = source_unit.get("revision", "")
+        edges.append(edge)
+
+    snapshot["generation_id"] = generation_id
+    snapshot["nodes"] = nodes
+    snapshot["edges"] = edges
+    snapshot.pop("quality", None)
+    runtime_index = {
         "schema_version": RUNTIME_SCHEMA_VERSION,
-        "units": [copy.deepcopy(by_id[memory_id]) for memory_id in ids],
-        "_graph": graph,
+        "generation_id": generation_id,
+        "unit_count": len(units),
+        "units": units,
+        "_graph": snapshot,
+        "_graph_validated": True,
     }
+    validate_recall_index(runtime_index)
+    runtime_index["_graph_quality"] = validate_memory_graph(
+        snapshot,
+        units,
+        allow_legacy=False,
+        expected_generation_id=generation_id,
+    )
+    return runtime_index
 
 
 def _duplicate_count(results):

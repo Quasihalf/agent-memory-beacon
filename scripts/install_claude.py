@@ -77,7 +77,7 @@ def install_hooks(
         mode = "stop" if event == "Stop" else "start"
         agent_arg = " --agent claude" if event == "Stop" else ""
         command = (
-            f'{HOOK_OWNER_MARKER} "{python_path}" "{harvester}" '
+            f'{HOOK_OWNER_MARKER} "{python_path}" -B "{harvester}" '
             f"--mode {mode}{agent_arg}"
         )
         event_hooks = settings.setdefault("hooks", {}).setdefault(event, [])
@@ -226,10 +226,11 @@ def _is_owned_command(
         tokens = tokens[1:]
     if len(tokens) < 2:
         return False
-    script = tokens[1]
+    script_index = 2 if len(tokens) >= 3 and tokens[1] == "-B" else 1
+    script = tokens[script_index]
     if not os.path.isabs(script) or os.path.basename(script) != script_path.name:
         return False
-    if not _matches_event_arguments(tokens[2:], mode):
+    if not _matches_event_arguments(tokens[script_index + 1 :], mode):
         return False
     if marked:
         return True

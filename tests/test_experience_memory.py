@@ -235,7 +235,7 @@ class ExperienceMemoryTests(unittest.TestCase):
             "error",
             "session:crowded",
             title="网格不收敛时降低松弛系数",
-            summary="通过残差验证收敛",
+            summary="Poisson 网格通过残差验证收敛",
             terms=["poisson", "网格", "收敛", "残差"],
         )
         workflow = formal_unit(
@@ -243,7 +243,7 @@ class ExperienceMemoryTests(unittest.TestCase):
             "workflow",
             "session:crowded",
             title="先跑小网格再扩大模型",
-            summary="先验证边界条件再做完整计算",
+            summary="Poisson 模型先验证边界条件再做完整计算",
             terms=["poisson", "边界", "验证", "小网格"],
         )
         competitors = [

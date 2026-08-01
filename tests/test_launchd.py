@@ -310,6 +310,10 @@ class LaunchdInstallerTests(unittest.TestCase):
             self.assertIn("--skip-profile-check", plist["ProgramArguments"])
             self.assertTrue(plist["RunAtLoad"])
             self.assertEqual(plist["ProcessType"], "Standard")
+            self.assertEqual(
+                plist["EnvironmentVariables"]["PYTHONDONTWRITEBYTECODE"],
+                "1",
+            )
 
     def test_weekly_job_uses_configured_launchd_calendar(self):
         with tempfile.TemporaryDirectory() as vault:
@@ -326,6 +330,10 @@ class LaunchdInstallerTests(unittest.TestCase):
             self.assertNotIn("--full", plist["ProgramArguments"])
             self.assertEqual(len(plist["ProgramArguments"]), 2)
             self.assertEqual(plist["ProcessType"], "Background")
+            self.assertEqual(
+                plist["EnvironmentVariables"]["PYTHONDONTWRITEBYTECODE"],
+                "1",
+            )
 
     def test_plists_can_bind_to_an_explicit_stable_scripts_directory(self):
         with tempfile.TemporaryDirectory() as vault, tempfile.TemporaryDirectory() as runtime:

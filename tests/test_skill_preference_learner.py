@@ -130,17 +130,19 @@ class SkillPreferenceLearnerTests(unittest.TestCase):
                 "avoid": " ".join(record["negative_signals"]),
                 "requires": ["skill-prerequisite"],
                 "expires_at": "2026-08-01T12:00:00+08:00",
+                "operationalized_as": ["workflow-humanizer-routing"],
             }
             formal = read_text(formal_path)
             formal = formal.replace(
                 "- status: `active`\n",
                 "- status: `active`\n"
                 "- requires: `skill-prerequisite`\n"
-                "- expires_at: `2026-08-01T12:00:00+08:00`\n",
+                "- expires_at: `2026-08-01T12:00:00+08:00`\n"
+                "- operationalized_as: `workflow-humanizer-routing`\n",
                 1,
             )
             formal = formal.replace(
-                f"- revision: `{memory_revision({**lifecycle, 'requires': [], 'expires_at': ''})}`",
+                f"- revision: `{memory_revision({**lifecycle, 'requires': [], 'expires_at': '', 'operationalized_as': []})}`",
                 f"- revision: `{memory_revision(lifecycle)}`",
                 1,
             )
@@ -160,6 +162,10 @@ class SkillPreferenceLearnerTests(unittest.TestCase):
             self.assertIsNotNone(parsed)
             self.assertEqual(parsed["requires"], ["skill-prerequisite"])
             self.assertEqual(parsed["expires_at"], lifecycle["expires_at"])
+            self.assertEqual(
+                parsed["operationalized_as"],
+                ["workflow-humanizer-routing"],
+            )
 
     def test_subagent_output_and_uppercase_code_symbol_are_not_skill_calls(self):
         messages = [

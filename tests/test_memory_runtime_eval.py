@@ -28,6 +28,9 @@ class MemoryRuntimeEvaluationTests(unittest.TestCase):
         self.assertEqual(report["deleted_residuals"], 0)
         self.assertLessEqual(report["no_trigger_p95_ms"], 100)
         self.assertLessEqual(report["recall_p95_ms"], 500)
+        self.assertLessEqual(report["graph_scale_p95_ms"], 500)
+        self.assertEqual(report["graph_scale_nodes"], 1600)
+        self.assertEqual(report["graph_scale_edges"], 6600)
         self.assertLessEqual(report["max_estimated_tokens"], 1500)
         self.assertLessEqual(report["long_task"]["injection_count"], 19)
         self.assertEqual(report["case_failures"], [])
@@ -45,6 +48,77 @@ class MemoryRuntimeEvaluationTests(unittest.TestCase):
         self.assertLess(result["injection_count"], 20)
         self.assertGreater(result["silent_count"], result["injection_count"])
 
+    def test_evaluator_subset_rebuilds_a_strict_generation_bound_graph(self):
+        from evaluate_memory_runtime import _index_for_ids, load_fixtures
+        from memory_graph import validate_memory_graph
+
+        fixtures = load_fixtures(FIXTURE_DIR)
+        by_id = {
+            unit["id"]: copy.deepcopy(unit)
+            for unit in fixtures["index"]["units"]
+        }
+        selected = [
+            "decision:formal-index",
+            "workflow:pensive",
+        ]
+
+        runtime_index = _index_for_ids(
+            by_id,
+            selected,
+            fixtures["graph"],
+        )
+        valid = False
+        try:
+            validate_memory_graph(
+                runtime_index.get("_graph"),
+                runtime_index.get("units"),
+                allow_legacy=False,
+                expected_generation_id=runtime_index.get("generation_id", ""),
+            )
+            valid = bool(runtime_index.get("_graph_validated"))
+        except (KeyError, TypeError, ValueError):
+            valid = False
+
+        self.assertTrue(valid)
+
+    def test_evaluator_revision_change_rebinds_graph_node_and_edge_evidence(self):
+        from evaluate_memory_runtime import _index_for_ids, load_fixtures
+        from memory_graph import validate_memory_graph
+        from memory_schema import memory_revision
+
+        fixtures = load_fixtures(FIXTURE_DIR)
+        by_id = {
+            unit["id"]: copy.deepcopy(unit)
+            for unit in fixtures["index"]["units"]
+        }
+        changed = by_id["workflow:pensive"]
+        changed["summary"] = changed["summary"] + "，并重新绑定评估图版本"
+        changed["revision"] = memory_revision(changed)
+
+        runtime_index = _index_for_ids(
+            by_id,
+            ["workflow:pensive"],
+            fixtures["graph"],
+        )
+        valid = False
+        try:
+            validate_memory_graph(
+                runtime_index.get("_graph"),
+                runtime_index.get("units"),
+                allow_legacy=False,
+                expected_generation_id=runtime_index.get("generation_id", ""),
+            )
+            graph_node = next(
+                node
+                for node in runtime_index["_graph"]["nodes"]
+                if node["id"] == changed["id"]
+            )
+            valid = graph_node["revision"] == changed["revision"]
+        except (KeyError, StopIteration, TypeError, ValueError):
+            valid = False
+
+        self.assertTrue(valid)
+
     def test_report_gate_rejects_each_hard_metric_regression(self):
         from evaluate_memory_runtime import report_passes
 
@@ -58,6 +132,7 @@ class MemoryRuntimeEvaluationTests(unittest.TestCase):
             "deleted_residuals": 0,
             "no_trigger_p95_ms": 100,
             "recall_p95_ms": 500,
+            "graph_scale_p95_ms": 500,
             "max_estimated_tokens": 1500,
             "long_task": {"injection_count": 19},
             "case_failures": [],
@@ -72,6 +147,7 @@ class MemoryRuntimeEvaluationTests(unittest.TestCase):
             "deleted_residuals": 1,
             "no_trigger_p95_ms": 100.1,
             "recall_p95_ms": 500.1,
+            "graph_scale_p95_ms": 500.1,
             "max_estimated_tokens": 1501,
             "long_task": {"injection_count": 20},
             "case_failures": ["missing-required-memory"],
@@ -161,7 +237,7 @@ class MemoryRuntimeEvaluationTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertEqual(report["fixture_schema_version"], "1.2")
+        self.assertEqual(report["fixture_schema_version"], "1.4")
         self.assertEqual(report["runtime_schema_version"], "2.0")
         self.assertNotIn("Traceback", completed.stderr)
 

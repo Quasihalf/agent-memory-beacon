@@ -210,6 +210,212 @@ class MemorySchemaTests(unittest.TestCase):
                 changed["revision"] = memory_revision(changed)
                 self.assertNotEqual(record["revision"], changed["revision"])
 
+    def test_declared_relations_are_formal_state_for_every_memory_type(self):
+        for memory_type in (
+            "decision",
+            "error",
+            "preference",
+            "project_rule",
+            "environment",
+            "skill",
+            "workflow",
+            "insight",
+        ):
+            with self.subTest(memory_type=memory_type):
+                raw = {
+                    "id": f"{memory_type}-semantic-source",
+                    "status": "active",
+                    "scope": "project",
+                    "project": "demo",
+                    "title": f"{memory_type} semantic source",
+                    "summary": "显式关系属于正式记忆内容",
+                    "source_refs": ["session:semantic-source"],
+                    "supports": ["decision-supported"],
+                    "operationalized_as": ["workflow-implementation"],
+                    "related_to": ["preference-related"],
+                    "contradicts": ["decision-conflicting"],
+                }
+                if memory_type == "insight":
+                    raw.update(
+                        {
+                            "maturity": "seed",
+                            "confidence": 0.86,
+                            "novelty": "关系可跨记忆类型表达",
+                            "transfer": ["记忆图谱"],
+                            "boundary": "仅适用于证据充分的显式关系",
+                            "origin": "user",
+                        }
+                    )
+
+                record = normalize_formal_record(raw, memory_type=memory_type)
+                without_relations = {
+                    key: value
+                    for key, value in record.items()
+                    if key
+                    not in {
+                        "supports",
+                        "operationalized_as",
+                        "related_to",
+                        "contradicts",
+                        "revision",
+                    }
+                }
+                without_relations["revision"] = memory_revision(without_relations)
+
+                self.assertEqual(record["supports"], ["decision-supported"])
+                self.assertEqual(
+                    record["operationalized_as"],
+                    ["workflow-implementation"],
+                )
+                self.assertEqual(record["related_to"], ["preference-related"])
+                self.assertEqual(record["contradicts"], ["decision-conflicting"])
+                self.assertNotEqual(record["revision"], without_relations["revision"])
+
+    def test_declared_relations_reject_invalid_self_and_duplicate_targets(self):
+        base = {
+            "id": "decision-semantic-source",
+            "text": "关系必须可审计",
+            "context": "避免图谱接收模糊或伪造边",
+            "project": "demo",
+            "scope": "project",
+            "source_refs": ["session:semantic-source"],
+        }
+        invalid = (
+            {"supports": "decision-target"},
+            {"supports": ["bad target"]},
+            {"supports": ["decision-semantic-source"]},
+            {"supports": ["decision-target", "decision-target"]},
+        )
+
+        for relations in invalid:
+            with self.subTest(relations=relations):
+                with self.assertRaises(ValueError):
+                    normalize_formal_record(
+                        {**base, **relations},
+                        memory_type="decision",
+                    )
+
+    def test_insight_relation_order_remains_revision_compatible(self):
+        record = normalize_formal_record(
+            {
+                "id": "insight-relation-order",
+                "status": "active",
+                "scope": "project",
+                "project": "demo",
+                "title": "关系顺序兼容旧 Insight",
+                "summary": "已有 Insight 的显式关系顺序不能被迁移静默改写",
+                "maturity": "seed",
+                "confidence": 0.86,
+                "novelty": "通用关系扩展仍保持旧 Insight revision 语义",
+                "transfer": ["记忆迁移"],
+                "boundary": "只约束 Insight 已有的三个关系字段",
+                "origin": "user",
+                "supports": ["decision-z", "decision-a"],
+                "source_refs": ["session:relation-order"],
+            },
+            memory_type="insight",
+        )
+
+        self.assertEqual(
+            record["supports"],
+            ["decision-z", "decision-a"],
+        )
+
+    def test_personal_formal_parser_round_trips_declared_relations(self):
+        title = "代码审查发现可修问题时直接修复"
+        record = normalize_formal_record(
+            {
+                "id": "project_rule-review-fix",
+                "status": "active",
+                "scope": "project",
+                "project": "demo",
+                "title": title,
+                "summary": title,
+                "source_refs": ["session:review-fix"],
+                "operationalized_as": ["workflow-review-fix"],
+                "related_to": ["skill-pensive"],
+            },
+            memory_type="project_rule",
+        )
+        section = f"""- id: `project_rule-review-fix`
+- revision: `{record['revision']}`
+- type: `project_rule`
+- status: `active`
+- operationalized_as: `workflow-review-fix`
+- related_to: `skill-pensive`
+- scope: `project`
+- project: [[01-Projects/demo/Memory/decisions|demo]]
+- source_refs: `session:review-fix`
+- memory: {title}
+"""
+
+        parsed = parse_formal_section(title, section, "personal")
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["operationalized_as"], ["workflow-review-fix"])
+        self.assertEqual(parsed["related_to"], ["skill-pensive"])
+        self.assertEqual(parsed["revision"], record["revision"])
+
+    def test_active_formal_metadata_preserves_declared_relations(self):
+        from memory_schema import active_formal_lifecycle_metadata
+
+        title = "github_source_first: 先读上游源码"
+        record = normalize_formal_record(
+            {
+                "id": "workflow-source-first",
+                "status": "active",
+                "scope": "project",
+                "project": "demo",
+                "title": title,
+                "summary": "避免根据名称猜测项目",
+                "name": "github_source_first",
+                "trigger": "用户给出 GitHub 仓库",
+                "behavior": "阅读 README 和关键源码后再分析",
+                "avoid": "用户明确要求只分析本地文件",
+                "source_refs": ["session:source-first"],
+                "supports": ["project_rule-source-first"],
+            },
+            memory_type="workflow",
+        )
+        content = f"""## {title}
+
+- id: `workflow-source-first`
+- revision: `{record['revision']}`
+- status: `active`
+- supports: `project_rule-source-first`
+- scope: `project`
+- rule_name: `github_source_first`
+- project: [[01-Projects/demo/Memory/decisions|demo]]
+- source_refs: `session:source-first`
+
+### Trigger scene
+
+用户给出 GitHub 仓库
+
+### Desired behavior
+
+阅读 README 和关键源码后再分析
+
+### Do not apply when
+
+用户明确要求只分析本地文件
+
+### Why this matters
+
+避免根据名称猜测项目
+"""
+
+        metadata = active_formal_lifecycle_metadata(
+            content,
+            "workflow-source-first",
+            "workflow",
+        )
+
+        self.assertEqual(
+            metadata,
+            {"supports": ["project_rule-source-first"]},
+        )
+
     def test_formal_insight_parser_requires_complete_structured_sections(self):
         title = "互补弱通道可以形成稳定系统"
         record = normalize_formal_record(

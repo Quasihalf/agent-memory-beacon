@@ -21,6 +21,7 @@ import yaml
 from branding import CODE_PREFIX, LEGACY_PROJECT_SLUG, PROJECT_SLUG
 from compiler import run as compile_agent_context
 from link_validator import run as validate_links
+from memory_graph import GRAPH_FILENAME
 from reporter import rebuild_maps
 from safety import (
     VAULT_INTERNAL_DIR_NAMES,
@@ -61,8 +62,7 @@ GENERATED_OUTPUT_FILES = (
     "05-Agent-Memory/keyword-index.md",
     "05-Agent-Memory/global-atoms.json",
     "05-Agent-Memory/global-atoms.md",
-    "05-Agent-Memory/recall-index.json",
-    "05-Agent-Memory/memory-graph.json",
+    "05-Agent-Memory/memory-graph-quality.md",
     "05-Agent-Memory/recall-context.md",
 )
 MIGRATION_JOURNAL_DIRECTORY = "journal"
@@ -1164,6 +1164,21 @@ def _mutation_contract(vault, config, parsed, frozen_absent_paths=()):
         "00-Inbox/Agent Memory Index.md",
         "memory_index_path",
     )
+    memory_runtime = parsed.get("memory_runtime") or {}
+    if not isinstance(memory_runtime, dict):
+        raise ValueError("config memory_runtime must be a mapping")
+    runtime_index = _configured_vault_path(
+        vault,
+        memory_runtime.get("index_path"),
+        "05-Agent-Memory/recall-index.json",
+        "memory_runtime.index_path",
+    )
+    runtime_graph = runtime_index.parent / GRAPH_FILENAME
+    _assert_no_symlink_below(
+        vault,
+        runtime_graph,
+        "memory_runtime graph path",
+    )
     protected_paths = [
         path
         for path in (
@@ -1185,6 +1200,12 @@ def _mutation_contract(vault, config, parsed, frozen_absent_paths=()):
         explicit_files.append(("config_path", "config", config, "rewrite"))
     explicit_files.append(
         ("memory_index_path", "index", memory_index, "rewrite")
+    )
+    explicit_files.extend(
+        (
+            ("memory_runtime", "index", runtime_index, "rewrite"),
+            ("memory_runtime", "graph", runtime_graph, "rewrite"),
+        )
     )
     explicit_files.extend(
         ("context", f"context[{index}]", path, "rewrite")
@@ -3675,6 +3696,9 @@ def load_migration_config(plan):
         "migration_paths_are_canonical": True,
         "agent_memory_path": str(root_path("agent_memory")),
         "memory_index_path": str(first_path("memory_index_path", "index")),
+        "memory_runtime": {
+            "index_path": str(first_path("memory_runtime", "index")),
+        },
         "context_targets": [
             str(spec.path)
             for spec in specs

@@ -30,6 +30,7 @@ from brand_migration import (
     atomic_write_json,
     build_migration_plan,
     create_migration_backup,
+    load_migration_config,
     memory_identity_keys,
     migration_writer_guard,
     plan_summary,
@@ -41,6 +42,40 @@ from brand_migration import (
 
 
 class BrandMigrationTests(unittest.TestCase):
+    def test_plan_and_rebuilder_preserve_custom_runtime_index_and_graph_paths(self):
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp).resolve()
+            vault = tmp / "vault"
+            make_vault(vault)
+            custom_dir = vault / "06-Custom"
+            custom_dir.mkdir()
+            custom_index = custom_dir / "runtime-recall.json"
+            custom_graph = custom_dir / "memory-graph.json"
+            custom_index.write_text("{}\n", encoding="utf-8")
+            custom_graph.write_text("{}\n", encoding="utf-8")
+            config = tmp / "config.yaml"
+            config.write_text(
+                (
+                    f"vault_path: {vault}\n"
+                    "projects: []\n"
+                    "project_keywords: {}\n"
+                    "memory_runtime:\n"
+                    "  index_path: 06-Custom/runtime-recall.json\n"
+                ),
+                encoding="utf-8",
+            )
+
+            plan = build_migration_plan(vault, config_path=config)
+            configured_targets = set(plan.configured_targets)
+            rebuilt_cfg = load_migration_config(plan)
+
+            self.assertIn(custom_index, configured_targets)
+            self.assertIn(custom_graph, configured_targets)
+            self.assertEqual(
+                rebuilt_cfg["memory_runtime"]["index_path"],
+                str(custom_index),
+            )
+
     def test_mapping_project_values_are_counted_rewritten_and_cycle_safe(self):
         old = "github-obsidian-knowledge-brain"
         new = "agent-memory-beacon"

@@ -139,17 +139,19 @@ class MemoryJudgeTests(unittest.TestCase):
                 "summary": record["content"],
                 "requires": ["preference-prerequisite"],
                 "expires_at": "2026-08-01T12:00:00+08:00",
+                "related_to": ["project_rule-chinese-output"],
             }
             formal = read_text(formal_path)
             formal = formal.replace(
                 "- status: `active`\n",
                 "- status: `active`\n"
                 "- requires: `preference-prerequisite`\n"
-                "- expires_at: `2026-08-01T12:00:00+08:00`\n",
+                "- expires_at: `2026-08-01T12:00:00+08:00`\n"
+                "- related_to: `project_rule-chinese-output`\n",
                 1,
             )
             formal = formal.replace(
-                f"- revision: `{memory_revision({**lifecycle, 'requires': [], 'expires_at': ''})}`",
+                f"- revision: `{memory_revision({**lifecycle, 'requires': [], 'expires_at': '', 'related_to': []})}`",
                 f"- revision: `{memory_revision(lifecycle)}`",
                 1,
             )
@@ -169,6 +171,10 @@ class MemoryJudgeTests(unittest.TestCase):
             self.assertIsNotNone(parsed)
             self.assertEqual(parsed["requires"], ["preference-prerequisite"])
             self.assertEqual(parsed["expires_at"], lifecycle["expires_at"])
+            self.assertEqual(
+                parsed["related_to"],
+                ["project_rule-chinese-output"],
+            )
 
     def test_one_off_github_username_change_is_not_personal_memory(self):
         candidates = extract_memory_candidates(

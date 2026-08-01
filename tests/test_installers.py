@@ -671,6 +671,7 @@ two
             self.assertIn("AGENT_MEMORY_BEACON_HOOK=1", command)
             self.assertIn(str(stable_harvester), command)
             self.assertNotIn(str(source_scripts), command)
+            self.assertEqual(shlex.split(command)[2], "-B")
 
             shutil.rmtree(source_scripts.parent)
             subprocess.run(command, check=True, shell=True)
@@ -721,6 +722,7 @@ two
             own = groups[1]["hooks"][0]
             self.assertEqual(own["type"], "command")
             self.assertIn("codex_prompt_hook.py", own["command"])
+            self.assertEqual(shlex.split(own["command"])[2], "-B")
             self.assertEqual(own["timeout"], 2)
             self.assertEqual(stat.S_IMODE(hooks_path.stat().st_mode), 0o600)
             self.assertEqual(config_toml.read_text(encoding="utf-8"), "model = 'local'\n")

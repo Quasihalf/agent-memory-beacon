@@ -278,6 +278,77 @@ class AnnotationQualityTests(unittest.TestCase):
         self.assertEqual(first["status"], "active")
         self.assertEqual(second["status"], "active")
 
+    def test_truncated_duplicate_decision_collapses_only_in_runtime_view(self):
+        first = runtime_record(
+            "decision-graph-short",
+            "decision",
+            "agent-memory-beacon",
+            "用正文 wiki link 连接个人记忆和项目记忆节点",
+            "Obsidian 图谱主要依赖 Markdown 正文中的 `[[...",
+        )
+        second = runtime_record(
+            "decision-graph-complete",
+            "decision",
+            "agent-memory-beacon",
+            "用正文 wiki link 连接个人记忆和项目记忆节点",
+            "Obsidian 图谱主要依赖 Markdown 正文中的链接，"
+            "frontmatter 元数据不足以让用户偏好和 decision 节点产生可见连线",
+        )
+
+        collapsed, duplicate_groups = collapse_runtime_duplicates([first, second])
+
+        self.assertEqual(len(collapsed), 1)
+        self.assertEqual(collapsed[0]["id"], second["id"])
+        self.assertEqual(len(duplicate_groups), 1)
+        self.assertEqual(
+            set(duplicate_groups[0]["member_ids"]),
+            {first["id"], second["id"]},
+        )
+        self.assertEqual(first["summary"], "Obsidian 图谱主要依赖 Markdown 正文中的 `[[...")
+
+    def test_same_decision_title_with_distinct_complete_summaries_stays_separate(self):
+        first = runtime_record(
+            "decision-cache-read",
+            "decision",
+            "demo",
+            "缓存策略",
+            "读取路径使用十分钟内存缓存，避免重复解析同一份索引",
+        )
+        second = runtime_record(
+            "decision-cache-write",
+            "decision",
+            "demo",
+            "缓存策略",
+            "写入路径禁用缓存并执行原子替换，避免提交旧 revision",
+        )
+
+        collapsed, duplicate_groups = collapse_runtime_duplicates([first, second])
+
+        self.assertEqual(len(collapsed), 2)
+        self.assertEqual(duplicate_groups, [])
+
+    def test_truncated_summary_exception_does_not_merge_workflow_records(self):
+        first = runtime_record(
+            "workflow-github-short",
+            "workflow",
+            "demo",
+            "GitHub 源码检查",
+            "分析 GitHub 项目前先读取 README 和关键源代码...",
+        )
+        second = runtime_record(
+            "workflow-github-complete",
+            "workflow",
+            "demo",
+            "GitHub 源码检查",
+            "分析 GitHub 项目前先读取 README 和关键源代码，"
+            "但用户只问通用概念或明确要求离线时不执行网络访问",
+        )
+
+        collapsed, duplicate_groups = collapse_runtime_duplicates([first, second])
+
+        self.assertEqual(len(collapsed), 2)
+        self.assertEqual(duplicate_groups, [])
+
     def test_duplicate_collapse_does_not_cross_projects_or_failure_modes(self):
         records = [
             runtime_record(

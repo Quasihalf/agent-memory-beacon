@@ -28,7 +28,7 @@ class BrandingTests(unittest.TestCase):
     def test_current_identity_is_centralized(self):
         self.assertEqual(PRODUCT_NAME, "Agent Memory Beacon")
         self.assertEqual(PRODUCT_SLUG, "agent-memory-beacon")
-        self.assertEqual(PRODUCT_VERSION, "0.5.0")
+        self.assertEqual(PRODUCT_VERSION, "0.7.0")
         self.assertEqual(CODE_PREFIX, "agent_memory_beacon")
         self.assertEqual(DEFAULT_VAULT_DIRNAME, "AgentMemoryBeacon")
         self.assertEqual(NEW_MANAGED_NAMESPACE, "AGENT_MEMORY_BEACON")

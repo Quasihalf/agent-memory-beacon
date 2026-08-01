@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -26,6 +27,123 @@ from transcript_utils import parse_transcript_since
 
 
 class AgentEndToEndTests(unittest.TestCase):
+    def test_rolling_summaries_replace_one_effective_summary_for_one_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = os.path.join(tmp, "vault")
+            create_vault_structure(vault)
+            transcript = Path(tmp) / "rolling-e2e.jsonl"
+            cfg = {
+                "vault_path": vault,
+                "projects": ["demo"],
+                "project_keywords": {},
+                "conversation_summary": {
+                    "enabled": True,
+                    "min_substantive_messages": 5,
+                    "message_interval": 10,
+                    "stale_after_minutes": 30,
+                    "retry_interval_messages": 2,
+                    "max_summary_bytes": 4096,
+                    "max_recall": 1,
+                    "token_budget": 400,
+                },
+                "personal_memory": {"enabled": False},
+                "skill_preferences": {"enabled": False},
+                "workflow_memory": {"enabled": False},
+                "annotation_quality": {"enabled": False},
+                "error_evidence": {"enabled": False},
+            }
+            write_jsonl(
+                transcript,
+                [
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "rolling-e2e",
+                            "cwd": "/tmp/demo",
+                            "timestamp": "2026-07-31T01:00:00Z",
+                        },
+                    },
+                    assistant_message(rolling_summary_marker("第一版摘要")),
+                ],
+            )
+
+            self.assertTrue(process_transcript(cfg, str(transcript)))
+            with transcript.open("a", encoding="utf-8") as handle:
+                json.dump(
+                    assistant_message(rolling_summary_marker("第二版摘要")),
+                    handle,
+                    ensure_ascii=False,
+                )
+                handle.write("\n")
+            self.assertTrue(process_transcript(cfg, str(transcript)))
+
+            sessions = glob.glob(
+                os.path.join(vault, "01-Projects/demo/Memory/sessions/*.md")
+            )
+            self.assertEqual(len(sessions), 1)
+            content = Path(sessions[0]).read_text(encoding="utf-8")
+            self.assertEqual(content.count("## Session Summary"), 1)
+            self.assertNotIn("第一版摘要", content)
+            self.assertIn("第二版摘要", content)
+            frontmatter = read_frontmatter(sessions[0])
+            self.assertEqual(frontmatter["summary_mode"], "rolling")
+            self.assertEqual(
+                frontmatter["summary_source_cursor"],
+                f"file-bytes:{transcript.stat().st_size}",
+            )
+
+            from config import MEMORY_RUNTIME_DEFAULTS
+            from memory_runtime import PromptEvent, handle_prompt
+
+            runtime = dict(MEMORY_RUNTIME_DEFAULTS)
+            runtime.update(
+                {
+                    "resolved_index_path": os.path.join(
+                        vault,
+                        "05-Agent-Memory",
+                        "recall-index.json",
+                    ),
+                    "resolved_state_dir": os.path.join(
+                        vault,
+                        "04-Feedback",
+                        "_logs",
+                        "recall-state",
+                    ),
+                    "resolved_log_path": os.path.join(
+                        vault,
+                        "04-Feedback",
+                        "_logs",
+                        "recall-hook.jsonl",
+                    ),
+                }
+            )
+            runtime_result = handle_prompt(
+                PromptEvent(
+                    "thread:rolling-e2e-recall",
+                    "继续验证滚动摘要替换的端到端采集",
+                    "/tmp/demo",
+                ),
+                {
+                    **cfg,
+                    "memory_runtime": runtime,
+                    "memory_effectiveness": {"enabled": False},
+                },
+                clock=lambda: datetime(
+                    2026,
+                    7,
+                    31,
+                    12,
+                    0,
+                    tzinfo=timezone.utc,
+                ),
+            )
+            self.assertIn("[CONTEXT]", runtime_result.additional_context)
+            self.assertIn("第二版摘要", runtime_result.additional_context)
+            self.assertNotIn(
+                "summary: 第一版摘要",
+                runtime_result.additional_context,
+            )
+
     def test_incremental_codex_parse_exposes_bounded_user_evidence_without_replay(self):
         with tempfile.TemporaryDirectory() as raw_tmp:
             transcript = Path(raw_tmp) / "context-window.jsonl"
@@ -391,6 +509,33 @@ def write_jsonl(path, records):
         for record in records:
             json.dump(record, handle, ensure_ascii=False)
             handle.write("\n")
+
+
+def assistant_message(content):
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "assistant",
+            "content": content,
+        },
+    }
+
+
+def rolling_summary_marker(summary):
+    return (
+        "<!-- AGENT_MEMORY_BEACON:ROLLING_SUMMARY_V1\n"
+        "project: demo\n"
+        "current_goal: 验证滚动摘要替换\n"
+        "topics:\n"
+        "  - 端到端采集\n"
+        "progress: []\n"
+        "constraints: []\n"
+        "important_context: []\n"
+        "open_items: []\n"
+        f"summary: {summary}\n"
+        "-->"
+    )
 
 
 def write_text(path, content):

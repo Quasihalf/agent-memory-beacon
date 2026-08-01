@@ -63,6 +63,7 @@ DERIVED_VAULT_PATHS = (
     "05-Agent-Memory/global-atoms.json",
     "05-Agent-Memory/global-atoms.md",
     "05-Agent-Memory/memory-graph.json",
+    "05-Agent-Memory/memory-graph-quality.md",
     "05-Agent-Memory/recall-context.md",
 )
 

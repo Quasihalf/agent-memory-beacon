@@ -1,9 +1,9 @@
 ---
 name: agent-memory-beacon
-description: Use when setting up, operating, debugging, auditing, or extending Agent Memory Beacon; when Codex memories are missing, stale, unrelated, duplicated, or absent from Obsidian; or when working on transcript harvesting, dynamic recall, formal-memory lifecycle, Agent context, and macOS launchd integration.
+description: Use when setting up, operating, debugging, auditing, or extending Agent Memory Beacon; when Codex memories are missing, stale, unrelated, duplicated, or absent from Obsidian; or when working on transcript harvesting, dynamic recall, formal-memory lifecycle, Agent context, macOS launchd, or Windows/Mac evidence synchronization.
 ---
 
-# Agent Memory Beacon v0.5.0
+# Agent Memory Beacon v0.7.0
 
 ## Overview
 
@@ -19,11 +19,31 @@ Agent Memory Beacon 是面向 Codex 的本地长期记忆层。它把可复用�
 | Claude Code | Automatic | Not yet | Collection-only |
 | ZCode | Compatibility | No | Maintenance only |
 
+Windows Codex/Claude can run as `producer-replica`: they publish immutable
+transcript evidence and consume a verified read-only Vault replica. Only the
+Mac `authority` may run the canonical harvester, publish formal memory, or
+apply lifecycle transitions.
+
+同步版本合同：
+
+| State/document | Version | Contract |
+|---|---:|---|
+| `transcript.chunk` / `transcript.gap` event + ready | 1 | 保持 golden bytes 和 event ID |
+| `attachment.blob` event + ready | 2 | `reference_id` 绑定 producer、stream、epoch、cursor、来源路径摘要、原名和 payload hash |
+| Producer state | 3 | 安全迁移 v1/v2 queue 与 pending state |
+| Authority ledger | 4 | 同时绑定 blob/metadata path、hash、bytes 与 sealed generation |
+
+新附件的 canonical 路径是
+`Attachments/Agent-Memory-Beacon/remote/objects/<sha[:2]>/<sha>.<ext>`，审计
+metadata 位于
+`04-Feedback/remote-attachments/<device>/<producer>/<seq>-<event-id>.md`。
+receipt 只有在两个文件都精确属于同一 sealed generation 时才能发布并授权 GC。
+
 Obsidian Vault 是事实来源和控制面。正式记忆必须可审计、可回溯来源，并遵守以下边界：
 
 - `[DECISION]`、`[ERROR]`、`[FAVOR]` 和 `[SESSION_SUMMARY]` 是提案，不是绕过质量门的指令。
 - 信息不足或耐久性不确定的内容进入隐藏 candidate，不参与召回。
-- Session 是证据，不直接进入运行时召回。
+- Session 正文是证据，不进入正式召回；每个 session 的最新有界摘要可派生为一条低优先级 `CONTEXT`。
 - 正式记忆的 supersede、retract、expire、restore 必须先预览，并获得精确用户授权。
 - 不保存密码、token、支付信息、原始推理或完整工具输出。
 
@@ -60,8 +80,10 @@ python3.11 -m venv .venv
 2. heartbeat 高水位是否推进。
 3. annotation 是否被判为 formal、candidate 或 rejected。
 4. 项目 decisions/pitfalls/personal memory 是否更新。
-5. `recall-index.json` 是否重建且 candidate 数量为零。
+5. `recall-index.json` 和 Graph v3 是否重建，图质量报告是否为 PASS，且 candidate 数量为零。
 6. UserPromptSubmit 是否满足首次、换题、索引变化、高风险或 30 分钟刷新条件。
+7. 跨设备模式再检查 producer global sequence、ready/object 哈希、authority
+   ledger、sealed generation、receipt 和 replica active marker。
 
 统一检查入口：
 
@@ -71,6 +93,43 @@ python3.11 -m venv .venv
 ```
 
 源码 checkout 使用 `quick`/`ci`；stable runtime 使用 `quick`/`live`。`ci` 需要源码中的 tests、fixtures 和 Git 元数据；`live` 检查真实 Vault、Hook、launchd 和协议探针。Doctor 默认只读。
+
+同步统一入口：
+
+```bash
+cd /absolute/path/to/agent-memory-beacon
+PY="$PWD/scripts/.venv/bin/python"
+CFG="$PWD/scripts/config.yaml"
+"$PY" -B scripts/beacon_sync.py --config "$CFG" doctor
+"$PY" -B scripts/beacon_sync.py --config "$CFG" run
+```
+
+Syncthing 只允许两个单向 folder：Windows outbox Send Only 到 Mac inbox
+Receive Only；Mac published Send Only 到 Windows received-published Receive Only。
+不要同步 canonical Vault、Windows replica、任一 state directory 或
+`attachment_roots`。
+
+Windows 首次建立副本时人工运行一次：
+
+```bash
+"$PY" -B scripts/beacon_sync.py --config "$CFG" materialize --bootstrap
+```
+
+后台 `run` 不会隐式 bootstrap。Windows 端最低支持 Windows 10 1809 /
+Windows Server 2019（build 17763）；安装前必须让 Doctor 通过。
+
+Windows 正式安装必须从 PowerShell 源码根目录运行
+`scripts/install_beacon_sync.py --runtime-root
+"$env:LOCALAPPDATA\AgentMemoryBeacon\runtime"`。安装器先发布并校验
+`releases/<release-id>`，再把当前用户 Task 和所选 `--codex-hooks` /
+`--claude-hooks` 事务绑定到 release 内的 Python、脚本和配置；不得把正式任务
+指向系统 Python 或 Git checkout。Mac authority 则由 `install_runtime.py` 在现有
+stable runtime 事务中按配置安装可选 sync LaunchAgent。
+
+不要把 canonical Vault 设成双向 Syncthing folder，不要手动改只读
+replica，也不要因 sequence gap 删除较高序列事件。应先恢复缺失
+bundle/object，再重跑 `run`。`collect --include-existing` 只用于明确批准的
+历史 bootstrap。
 
 ## Memory Quality And Comparison
 

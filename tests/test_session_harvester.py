@@ -1,8 +1,10 @@
 import glob
+import hashlib
 import io
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,6 +20,10 @@ sys.path.insert(0, SCRIPTS_DIR)
 
 import session_harvester
 
+from conversation_summary import (
+    extract_rolling_summary,
+    summary_revision,
+)
 from session_harvester import (
     append_decisions,
     append_errors_to_pitfalls,
@@ -51,6 +57,7 @@ from session_harvester import (
     write_session_to_vault,
 )
 from memory_judge import extract_memory_candidates, render_formal_memory_entry
+from memory_recall import load_recall_index
 from memory_schema import memory_revision, parse_active_formal_section
 from error_evidence import ErrorEvidenceStateError
 from safety import split_frontmatter_text
@@ -271,7 +278,13 @@ class SessionHarvesterTests(unittest.TestCase):
             append_decisions(
                 cfg,
                 "github-obsidian-knowledge-brain",
-                [{"text": "使用原子写入", "context": "避免部分文件"}],
+                [
+                    {
+                        "text": "使用原子写入",
+                        "context": "避免部分文件",
+                        "operationalized_as": ["workflow-atomic-write"],
+                    }
+                ],
                 "sess-1",
                 "2026-07-12",
             )
@@ -295,6 +308,10 @@ class SessionHarvesterTests(unittest.TestCase):
             )
             self.assertEqual(decisions["schema_version"], "2.0")
             self.assertEqual(pitfalls["schema_version"], "2.0")
+            self.assertEqual(
+                decisions["decisions"][0]["operationalized_as"],
+                ["workflow-atomic-write"],
+            )
             for record in (decisions["decisions"][0], pitfalls["pitfalls"][0]):
                 self.assertTrue(record["id"])
                 self.assertTrue(record["revision"])
@@ -493,6 +510,11 @@ pitfalls:
                 "06-Custom",
                 "runtime-recall.json",
             )
+            custom_graph = os.path.join(
+                vault,
+                "06-Custom",
+                "memory-graph.json",
+            )
             cfg = {
                 "vault_path": vault,
                 "memory_runtime": {
@@ -506,7 +528,17 @@ pitfalls:
             )
 
             self.assertIn(custom_recall, result["written"])
+            self.assertIn(custom_graph, result["written"])
             self.assertTrue(os.path.exists(custom_recall))
+            self.assertTrue(os.path.exists(custom_graph))
+            loaded = load_recall_index(custom_recall)
+            self.assertIn("_graph", loaded)
+            self.assertEqual(result["graph_unbound_evidence"], 0)
+            self.assertEqual(result["graph_missing_memory_nodes"], 0)
+            self.assertEqual(
+                result["graph_generation_id"],
+                loaded["generation_id"],
+            )
             self.assertFalse(
                 os.path.exists(
                     os.path.join(
@@ -516,6 +548,105 @@ pitfalls:
                     )
                 )
             )
+            self.assertFalse(
+                os.path.exists(
+                    os.path.join(
+                        vault,
+                        "05-Agent-Memory",
+                        "memory-graph.json",
+                    )
+                )
+            )
+
+    def test_cooperative_rebuild_keeps_graph_projection_current(self):
+        with tempfile.TemporaryDirectory() as vault:
+            cfg = {
+                "vault_path": vault,
+                "projects": ["demo"],
+            }
+            append_decisions(
+                cfg,
+                "demo",
+                [
+                    {
+                        "text": "协作重建同步图谱投影",
+                        "context": "后台索引路径也必须生成可见节点",
+                    }
+                ],
+                "session-cooperative-projection",
+                "2026-07-31",
+            )
+
+            result = session_harvester._rebuild_vault_knowledge_indexes_cooperative(
+                cfg,
+                lambda: None,
+            )
+
+            self.assertGreaterEqual(result["graph_projection_nodes"], 1)
+            projection_root = os.path.join(
+                vault,
+                "03-Maps",
+                "_memory-nodes",
+            )
+            self.assertTrue(
+                any(
+                    filename.endswith(".md")
+                    for _current, _dirs, files in os.walk(projection_root)
+                    for filename in files
+                )
+            )
+
+    def test_visible_index_reports_configured_memory_graph_path(self):
+        with tempfile.TemporaryDirectory() as vault:
+            index_path = os.path.join(
+                vault,
+                "00-Inbox",
+                "Agent Memory Index.md",
+            )
+            rebuild_memory_index(
+                {
+                    "vault_path": vault,
+                    "memory_runtime": {
+                        "index_path": "06-Custom/runtime-recall.json",
+                    },
+                }
+            )
+
+            content = read_text(index_path)
+            self.assertIn("`06-Custom/memory-graph.json`", content)
+            self.assertNotIn("`05-Agent-Memory/memory-graph.json`", content)
+
+    def test_cooperative_rebuild_excludes_configured_insight_candidates(self):
+        with tempfile.TemporaryDirectory() as vault:
+            candidate_dir = os.path.join(
+                vault,
+                "05-Agent-Memory",
+                "private-insight-candidates",
+            )
+            os.makedirs(candidate_dir)
+            write_text(
+                os.path.join(candidate_dir, "private.md"),
+                "---\ntype: insight-candidate\nstatus: candidate\n---\n\n"
+                "# cooperativecandidateleaktoken\n",
+            )
+            cfg = {
+                "vault_path": vault,
+                "insight_memory": {
+                    "candidate_dir": (
+                        "05-Agent-Memory/private-insight-candidates"
+                    ),
+                },
+            }
+
+            result = session_harvester._rebuild_vault_knowledge_indexes_cooperative(
+                cfg,
+                lambda: None,
+            )
+
+            machine_text = "\n".join(
+                read_text(path) for path in result["written"]
+            )
+            self.assertNotIn("cooperativecandidateleaktoken", machine_text)
 
     def test_rebuild_memory_index_reports_phase_timings(self):
         with tempfile.TemporaryDirectory() as vault:
@@ -669,6 +800,29 @@ pitfalls:
             stop_mode({}, run_scanner=False)
 
         mocked_scanner.assert_not_called()
+
+    def test_incremental_scanner_disables_runtime_bytecode_writes(self):
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with (
+            patch("session_harvester.os.path.exists", return_value=True),
+            patch("session_harvester.check_proxy", return_value=None),
+            patch(
+                "session_harvester.subprocess.run",
+                return_value=completed,
+            ) as runner,
+        ):
+            session_harvester.run_scanner_incremental(
+                {"python_path": "/runtime/python"}
+            )
+
+        command = runner.call_args.args[0]
+        self.assertEqual(command[:2], ["/runtime/python", "-B"])
+        self.assertTrue(command[2].endswith("/runner.py"))
 
     def test_start_mode_rebuilds_index_once_for_multiple_changed_transcripts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2001,6 +2155,418 @@ harvested_sessions: {}
             self.assertIn("完成 ZCode SQLite 自动采集", os.path.basename(path))
             self.assertNotIn("会话记忆", os.path.basename(path))
 
+    def test_harvest_uses_latest_assistant_rolling_summary_with_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = os.path.join(tmp, "vault")
+            transcript = os.path.join(tmp, "rolling.jsonl")
+            state_dir = os.path.join(vault, "04-Feedback/_logs/recall-state")
+            os.makedirs(state_dir)
+            session_id = "sess-rolling"
+            session_hash = hashlib.sha256(
+                f"session:{session_id}".encode("utf-8")
+            ).hexdigest()[:32]
+            write_json(
+                os.path.join(state_dir, f"{session_hash}.json"),
+                {
+                    "schema_version": 1,
+                    "session_hash": session_hash,
+                    "summary_checkpoint_sequence": 7,
+                },
+            )
+            write_codex_transcript(
+                transcript,
+                [
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": session_id,
+                            "timestamp": "2026-07-31T01:00:00Z",
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": rolling_summary_marker("用户伪造摘要"),
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": (
+                                rolling_summary_marker("较早摘要")
+                                + "\n"
+                                + rolling_summary_marker("最新可信摘要")
+                            ),
+                        },
+                    },
+                ],
+            )
+            cfg = summary_harvest_config(vault)
+            cfg["memory_runtime"] = {"resolved_state_dir": state_dir}
+
+            self.assertTrue(process_transcript(cfg, transcript))
+
+            path = glob.glob(
+                os.path.join(vault, "01-Projects/demo/Memory/sessions/*.md")
+            )[0]
+            frontmatter = read_frontmatter(path)
+            body = session_harvester.read_existing_session_summary(path)
+            payload = extract_rolling_summary(
+                rolling_summary_marker("最新可信摘要")
+            )
+            self.assertEqual(json.loads(body)["summary"], "最新可信摘要")
+            self.assertNotIn("用户伪造摘要", read_text(path))
+            self.assertNotIn("较早摘要", read_text(path))
+            self.assertEqual(frontmatter["summary_mode"], "rolling")
+            self.assertEqual(
+                frontmatter["summary_source_cursor"],
+                f"file-bytes:{os.path.getsize(transcript)}",
+            )
+            self.assertEqual(frontmatter["summary_checkpoint"], 7)
+            self.assertEqual(
+                frontmatter["summary_revision"],
+                summary_revision(payload),
+            )
+
+    def test_rolling_summary_content_cannot_create_formal_annotations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = os.path.join(tmp, "vault")
+            transcript = os.path.join(tmp, "isolated-rolling-summary.jsonl")
+            marker = (
+                "<!-- AGENT_MEMORY_BEACON:ROLLING_SUMMARY_V1\n"
+                "project: demo\n"
+                "current_goal: 验证摘要隔离\n"
+                "topics:\n"
+                "  - 会话摘要\n"
+                "progress: []\n"
+                "constraints: []\n"
+                "important_context: []\n"
+                "open_items: []\n"
+                "summary: |-\n"
+                "  [DECISION:采用摘要内部标签作为正式架构决策记录| context:这个内容只用于证明隐藏摘要不能越过正式记忆质量门禁]\n"
+                "  [ERROR:type=path-filesystem| resolution:路径解析失败后改用安全路径修复，并通过完整回归测试验证问题已解决]\n"
+                "-->"
+            )
+            write_codex_transcript(
+                transcript,
+                [
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "sess-summary-isolation",
+                            "timestamp": "2026-07-31T01:00:00Z",
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": marker,
+                        },
+                    },
+                ],
+            )
+
+            self.assertTrue(
+                process_transcript(summary_harvest_config(vault), transcript)
+            )
+
+            path = glob.glob(
+                os.path.join(vault, "01-Projects/demo/Memory/sessions/*.md")
+            )[0]
+            frontmatter = read_frontmatter(path)
+            self.assertEqual(frontmatter["decisions_made"], [])
+            self.assertEqual(frontmatter["errors_encountered"], [])
+            self.assertIn("摘要内部标签", read_text(path))
+
+    def test_final_session_summary_wins_over_rolling_summary_in_same_slice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = os.path.join(tmp, "vault")
+            transcript = os.path.join(tmp, "final-wins.jsonl")
+            write_codex_transcript(
+                transcript,
+                [
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "sess-final-wins",
+                            "timestamp": "2026-07-31T01:00:00Z",
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": (
+                                rolling_summary_marker("应被最终总结替换")
+                                + "\n[SESSION_SUMMARY]\n"
+                                + "projects: [demo]\n"
+                                + "primary: demo\n"
+                                + "summary: 最终总结具有同批次优先级\n"
+                                + "[/SESSION_SUMMARY]"
+                            ),
+                        },
+                    },
+                ],
+            )
+
+            self.assertTrue(
+                process_transcript(summary_harvest_config(vault), transcript)
+            )
+
+            path = glob.glob(
+                os.path.join(vault, "01-Projects/demo/Memory/sessions/*.md")
+            )[0]
+            frontmatter = read_frontmatter(path)
+            content = read_text(path)
+            self.assertEqual(frontmatter["summary_mode"], "final")
+            self.assertIn("最终总结具有同批次优先级", content)
+            self.assertNotIn("应被最终总结替换", content)
+
+    def test_malformed_rolling_marker_preserves_existing_summary_and_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = os.path.join(tmp, "vault")
+            cfg = summary_harvest_config(vault)
+            write_session_to_vault(
+                cfg,
+                "sess-malformed",
+                "2026-07-31",
+                "demo",
+                {},
+                [],
+                [],
+                rolling_summary_json("保留原摘要"),
+                summary_mode="rolling",
+                summary_source_cursor="file-bytes:10",
+                summary_checkpoint=3,
+            )
+            path = glob.glob(
+                os.path.join(vault, "01-Projects/demo/Memory/sessions/*.md")
+            )[0]
+            original_frontmatter = read_frontmatter(path)
+            transcript = os.path.join(tmp, "malformed.jsonl")
+            write_codex_transcript(
+                transcript,
+                [
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "sess-malformed",
+                            "timestamp": "2026-07-31T01:00:00Z",
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": (
+                                "<!-- AGENT_MEMORY_BEACON:ROLLING_SUMMARY_V1\n"
+                                "current_goal: broken\n"
+                                "topics: [missing summary]\n"
+                                "-->"
+                            ),
+                        },
+                    },
+                ],
+            )
+
+            self.assertFalse(process_transcript(cfg, transcript))
+
+            frontmatter = read_frontmatter(path)
+            self.assertEqual(
+                session_harvester.read_existing_session_summary(path),
+                rolling_summary_json("保留原摘要"),
+            )
+            for field in (
+                "summary_mode",
+                "summary_revision",
+                "summary_updated_at",
+                "summary_source_cursor",
+                "summary_checkpoint",
+            ):
+                self.assertEqual(frontmatter[field], original_frontmatter[field])
+
+    def test_rolling_summary_is_redacted_before_revision_is_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = os.path.join(tmp, "vault")
+            transcript = os.path.join(tmp, "redacted-summary.jsonl")
+            write_codex_transcript(
+                transcript,
+                [
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "sess-redacted-summary",
+                            "timestamp": "2026-07-31T01:00:00Z",
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": rolling_summary_marker(
+                                "password=summary-secret-value"
+                            ),
+                        },
+                    },
+                ],
+            )
+
+            self.assertTrue(
+                process_transcript(summary_harvest_config(vault), transcript)
+            )
+
+            path = glob.glob(
+                os.path.join(vault, "01-Projects/demo/Memory/sessions/*.md")
+            )[0]
+            content = read_text(path)
+            payload = json.loads(
+                session_harvester.read_existing_session_summary(path)
+            )
+            self.assertNotIn("summary-secret-value", content)
+            self.assertIn("[REDACTED]", content)
+            self.assertEqual(
+                read_frontmatter(path)["summary_revision"],
+                summary_revision(payload),
+            )
+
+    def test_decision_only_update_preserves_summary_provenance(self):
+        with tempfile.TemporaryDirectory() as vault:
+            cfg = summary_harvest_config(vault)
+            write_session_to_vault(
+                cfg,
+                "sess-summary-provenance",
+                "2026-07-31",
+                "demo",
+                {},
+                [],
+                [],
+                rolling_summary_json("已有摘要"),
+                summary_mode="rolling",
+                summary_source_cursor="file-bytes:20",
+                summary_checkpoint=5,
+            )
+            path = glob.glob(
+                os.path.join(vault, "01-Projects/demo/Memory/sessions/*.md")
+            )[0]
+            original = read_frontmatter(path)
+
+            write_session_to_vault(
+                cfg,
+                "sess-summary-provenance",
+                "2026-07-31",
+                "demo",
+                {},
+                [{"text": "新增决定", "context": "不应改写摘要来源"}],
+                [],
+                None,
+            )
+
+            updated = read_frontmatter(path)
+            self.assertIn("新增决定", read_text(path))
+            for field in (
+                "summary_mode",
+                "summary_revision",
+                "summary_updated_at",
+                "summary_source_cursor",
+                "summary_checkpoint",
+            ):
+                self.assertEqual(updated[field], original[field])
+
+    def test_summary_replacement_requires_a_newer_source_cursor(self):
+        with tempfile.TemporaryDirectory() as vault:
+            cfg = summary_harvest_config(vault)
+            write_session_to_vault(
+                cfg,
+                "sess-summary-cursor",
+                "2026-07-31",
+                "demo",
+                {},
+                [],
+                [],
+                rolling_summary_json("当前有效摘要"),
+                summary_mode="rolling",
+                summary_source_cursor="file-bytes:20",
+                summary_checkpoint=2,
+            )
+            path = glob.glob(
+                os.path.join(vault, "01-Projects/demo/Memory/sessions/*.md")
+            )[0]
+            original = read_frontmatter(path)
+
+            write_session_to_vault(
+                cfg,
+                "sess-summary-cursor",
+                "2026-07-31",
+                "demo",
+                {},
+                [{"text": "保留新游标", "context": "旧批次只能追加正式注解"}],
+                [],
+                rolling_summary_json("旧批次摘要"),
+                summary_mode="rolling",
+                summary_source_cursor="file-bytes:10",
+                summary_checkpoint=1,
+            )
+            stale = read_frontmatter(path)
+            self.assertIn("保留新游标", read_text(path))
+            self.assertEqual(
+                session_harvester.read_existing_session_summary(path),
+                rolling_summary_json("当前有效摘要"),
+            )
+            self.assertEqual(stale["summary_source_cursor"], "file-bytes:20")
+            self.assertEqual(
+                stale["summary_revision"],
+                original["summary_revision"],
+            )
+
+            equal_result = write_session_to_vault(
+                cfg,
+                "sess-summary-cursor",
+                "2026-07-31",
+                "demo",
+                {},
+                [],
+                [],
+                rolling_summary_json("同游标冲突摘要"),
+                summary_mode="rolling",
+                summary_source_cursor="file-bytes:20",
+                summary_checkpoint=2,
+            )
+            self.assertEqual(equal_result, 0)
+            self.assertEqual(
+                session_harvester.read_existing_session_summary(path),
+                rolling_summary_json("当前有效摘要"),
+            )
+
+            write_session_to_vault(
+                cfg,
+                "sess-summary-cursor",
+                "2026-07-31",
+                "demo",
+                {},
+                [],
+                [],
+                rolling_summary_json("更新后的摘要"),
+                summary_mode="rolling",
+                summary_source_cursor="file-bytes:30",
+                summary_checkpoint=3,
+            )
+            updated = read_frontmatter(path)
+            self.assertEqual(
+                session_harvester.read_existing_session_summary(path),
+                rolling_summary_json("更新后的摘要"),
+            )
+            self.assertEqual(updated["summary_source_cursor"], "file-bytes:30")
+            self.assertEqual(updated["summary_checkpoint"], 3)
+
     def test_untrusted_date_cannot_escape_session_directory(self):
         with tempfile.TemporaryDirectory() as vault:
             cfg = {"vault_path": vault}
@@ -2934,7 +3500,8 @@ harvested_at: '2026-07-10T09:00:00+08:00'
                             "type": "agent_message",
                             "message": (
                                 "[FAVOR:默认把审查提示词当成长期偏好| "
-                                "context:子代理内部指令| type:preference]"
+                                "context:子代理内部指令| type:preference]\n"
+                                + rolling_summary_marker("子代理摘要不得持久化")
                             ),
                         },
                     },
@@ -2958,8 +3525,118 @@ harvested_at: '2026-07-10T09:00:00+08:00'
             self.assertFalse(
                 os.path.exists(os.path.join(vault, "04-Feedback/_skill-preferences"))
             )
+            self.assertEqual(
+                glob.glob(
+                    os.path.join(
+                        vault,
+                        "01-Projects/demo/Memory/sessions/*.md",
+                    )
+                ),
+                [],
+            )
             self.assertFalse(
                 os.path.exists(os.path.join(vault, "04-Feedback/_workflow-candidates"))
+            )
+            self.assertFalse(
+                os.path.exists(os.path.join(vault, "04-Feedback/_error-candidates"))
+            )
+            self.assertFalse(
+                os.path.exists(os.path.join(vault, "04-Feedback/_insight-candidates"))
+            )
+            self.assertFalse(
+                os.path.exists(os.path.join(vault, "05-Agent-Memory/insights.md"))
+            )
+
+    def test_user_resumed_subagent_thread_can_persist_requested_rolling_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = os.path.join(tmp, "vault")
+            outer_session_id = "019ee90f-5f61-7db2-9c12-3f2813b04e2e"
+            nested_session_id = "019edfac-7fec-7c02-892b-0d4792f7f24a"
+            transcript = os.path.join(
+                tmp,
+                "rollout-2026-06-21T15-22-39-" + outer_session_id + ".jsonl",
+            )
+            write_codex_transcript(
+                transcript,
+                [
+                    {
+                        "timestamp": "2026-07-10T01:00:00Z",
+                        "type": "session_meta",
+                        "payload": {
+                            "id": outer_session_id,
+                            "cwd": "/tmp/demo",
+                            "timestamp": "2026-07-10T01:00:00Z",
+                            "source": {
+                                "subagent": {
+                                    "thread_spawn": {
+                                        "parent_thread_id": "sess-parent"
+                                    }
+                                }
+                            },
+                            "thread_source": "subagent",
+                        },
+                    },
+                    {
+                        "timestamp": "2026-07-10T01:00:01Z",
+                        "type": "session_meta",
+                        "payload": {
+                            "id": nested_session_id,
+                            "cwd": "/tmp/demo",
+                            "timestamp": "2026-07-10T01:00:01Z",
+                            "source": "vscode",
+                        },
+                    },
+                    {
+                        "timestamp": "2026-07-10T01:02:00Z",
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "agent_message",
+                            "message": (
+                                "[FAVOR:子代理内部偏好不得晋升| "
+                                "context:验证摘要恢复不放宽自适应记忆隔离| "
+                                "type:preference]\n"
+                                + rolling_summary_marker("用户恢复任务后的最新摘要")
+                            ),
+                        },
+                    },
+                ],
+            )
+            cfg = summary_harvest_config(vault)
+            cfg["personal_memory"] = {"enabled": True}
+            cfg["skill_preferences"] = {"enabled": True}
+            cfg["workflow_memory"] = {"enabled": True}
+            cfg["insight_memory"] = {"enabled": True}
+            state_dir = os.path.join(
+                vault,
+                "04-Feedback/_logs/recall-state",
+            )
+            os.makedirs(state_dir, exist_ok=True)
+            cfg["memory_runtime"] = {"resolved_state_dir": state_dir}
+            session_hash = hashlib.sha256(
+                f"thread:{outer_session_id}".encode("utf-8")
+            ).hexdigest()[:32]
+            write_json(
+                os.path.join(state_dir, f"{session_hash}.json"),
+                {
+                    "schema_version": 1,
+                    "session_hash": session_hash,
+                    "summary_checkpoint_sequence": 1,
+                },
+            )
+
+            self.assertTrue(process_transcript(cfg, transcript))
+
+            sessions = glob.glob(
+                os.path.join(vault, "01-Projects/demo/Memory/sessions/*.md")
+            )
+            self.assertEqual(len(sessions), 1)
+            frontmatter = read_frontmatter(sessions[0])
+            self.assertEqual(frontmatter["session_id"], nested_session_id)
+            self.assertEqual(frontmatter["summary_mode"], "rolling")
+            self.assertEqual(frontmatter["summary_checkpoint"], 1)
+            self.assertIn("用户恢复任务后的最新摘要", read_text(sessions[0]))
+            self.assertFalse(
+                os.path.exists(os.path.join(vault, "05-Agent-Memory/personal-memory.md"))
             )
             self.assertFalse(
                 os.path.exists(os.path.join(vault, "04-Feedback/_error-candidates"))
@@ -3413,6 +4090,56 @@ def write_codex_transcript(path, records):
         for record in records:
             json.dump(record, handle, ensure_ascii=False)
             handle.write("\n")
+
+
+def rolling_summary_marker(summary):
+    return (
+        "<!-- AGENT_MEMORY_BEACON:ROLLING_SUMMARY_V1\n"
+        "project: demo\n"
+        "current_goal: 完成滚动摘要采集\n"
+        "topics:\n"
+        "  - 会话摘要\n"
+        "progress:\n"
+        "  - 已验证采集路径\n"
+        "constraints: []\n"
+        "important_context: []\n"
+        "open_items: []\n"
+        f"summary: {summary}\n"
+        "-->"
+    )
+
+
+def rolling_summary_json(summary):
+    payload = extract_rolling_summary(rolling_summary_marker(summary))
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def summary_harvest_config(vault):
+    return {
+        "vault_path": vault,
+        "projects": [{"name": "demo", "keywords": ["demo"]}],
+        "project_keywords": {},
+        "conversation_summary": {
+            "enabled": True,
+            "min_substantive_messages": 5,
+            "message_interval": 10,
+            "stale_after_minutes": 30,
+            "retry_interval_messages": 2,
+            "max_summary_bytes": 4096,
+            "max_recall": 1,
+            "token_budget": 400,
+        },
+        "personal_memory": {"enabled": False},
+        "skill_preferences": {"enabled": False},
+        "workflow_memory": {"enabled": False},
+        "annotation_quality": {"enabled": False},
+        "error_evidence": {"enabled": False},
+    }
 
 
 def write_minimal_zcode_db(db_path, session_id):

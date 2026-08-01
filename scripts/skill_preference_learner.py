@@ -14,6 +14,7 @@ import yaml
 
 from memory_authority import render_authority_markdown_lines
 from memory_schema import (
+    MEMORY_RELATION_FIELDS,
     RUNTIME_SCHEMA_VERSION,
     active_formal_lifecycle_metadata,
     canonical_project,
@@ -719,6 +720,12 @@ def render_formal_rule(record, lifecycle_metadata=None):
         )
     if formal.get("expires_at"):
         lines.append(f"- expires_at: `{formal['expires_at']}`")
+    for key in MEMORY_RELATION_FIELDS:
+        if formal.get(key):
+            lines.append(
+                f"- {key}: "
+                + ", ".join(f"`{item}`" for item in formal[key])
+            )
     lines.extend(render_authority_markdown_lines(formal))
     lines.extend(
         [

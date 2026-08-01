@@ -18,8 +18,23 @@ from experience_memory import (
     select_experience_companions,
     validate_experience_bundles,
 )
-from knowledge_index import extract_terms, is_session_memory_path, type_rank
+from conversation_summary import (
+    conversation_summary_search_text,
+    validate_conversation_summary_record,
+)
+from knowledge_index import (
+    enrich_runtime_unit,
+    extract_terms,
+    is_session_memory_path,
+    type_rank,
+)
 from memory_authority import authority_rank, authority_route, normalize_authority_metadata
+from memory_graph import (
+    GRAPH_FILENAME,
+    graph_path_for_index,
+    semantic_memory_paths,
+    validate_memory_graph,
+)
 from memory_schema import (
     RUNTIME_SCHEMA_VERSION,
     canonical_project,
@@ -29,11 +44,9 @@ from memory_schema import (
 
 
 DEFAULT_INDEX = os.path.join("05-Agent-Memory", "recall-index.json")
-GRAPH_FILENAME = "memory-graph.json"
-GRAPH_RELATION_WEIGHTS = {
-    "recorded_in": 3,
-    "links_to": 6,
-}
+RUNTIME_METADATA_FIELDS = frozenset(
+    {"_graph", "_graph_quality", "_graph_validated", "_path"}
+)
 RETRIEVAL_CHANNELS = (
     "lexical",
     "structured",
@@ -128,6 +141,47 @@ INSPIRATION_WEAK_CONTENT_PATTERN = re.compile(
     r"\b(?:feature|system|program|project|thing|task|plan|method)\b)",
     re.IGNORECASE,
 )
+CONVERSATION_SUMMARY_INTENT_PATTERN = re.compile(
+    r"(?:滚动)?(?:会话|对话)?摘要|上下文|"
+    r"\bsummar(?:y|ies)\b|"
+    r"\b(?:rolling\s+)?(?:conversation|session)\s+summar(?:y|ies)\b|"
+    r"\bconversation\s+context\b",
+    re.IGNORECASE,
+)
+CONVERSATION_SUMMARY_WEAK_ENGLISH_PATTERN = re.compile(
+    r"\b(?:status|state|progress|updates?|recall|retrieval|retrieve[ds]?|"
+    r"current|active|latest|recent|last|conversation|session|memory|"
+    r"goals?|tasks?|topics?|constraints?|items?|details?|information|info|"
+    r"overview|work|working|done|pending)\b",
+    re.IGNORECASE,
+)
+CONVERSATION_SUMMARY_GENERIC_CHINESE_TERMS = frozenset(
+    {
+        "状态", "进度", "进展", "更新", "召回", "检索", "记录", "会话",
+        "对话", "最近", "最新", "上次", "目标", "任务", "主题", "待办",
+        "约束", "重要", "信息", "内容", "详情", "工作", "完成", "未完成",
+        "摘要", "滚动摘要", "上下文", "是什么", "为什么", "怎么办",
+        "有什么", "有哪些", "哪些", "什么", "怎么", "如何", "为何", "请",
+        "麻烦", "给我", "帮我", "帮忙", "一下", "一个", "这个", "那个",
+        "这些", "那些", "相关", "关于", "修复", "解决", "处理", "问题",
+        "全部", "所有", "列出", "清单", "汇总", "刚才", "最早", "最初",
+        "第一次", "一次", "我们", "你们", "我", "你", "之前", "聊了",
+        "聊过", "聊", "说了", "说过", "说", "看", "看看", "告诉",
+        "告诉我", "当前", "目前", "现在", "的", "了", "吗", "呢", "啊",
+        "吧",
+    }
+)
+CONVERSATION_SUMMARY_GENERIC_CHINESE_PATTERN = re.compile(
+    r"^(?:"
+    + "|".join(
+        re.escape(term)
+        for term in sorted(
+            CONVERSATION_SUMMARY_GENERIC_CHINESE_TERMS,
+            key=lambda term: (-len(term), term),
+        )
+    )
+    + r"|[\s，。！？、；：,.!?;:（）()\[\]{}])+$"
+)
 
 
 def load_recall_index(vault_or_index_path):
@@ -139,11 +193,13 @@ def load_recall_index(vault_or_index_path):
         raise FileNotFoundError(f"recall index not found: {path}")
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
-    graph_path = os.path.join(os.path.dirname(path), GRAPH_FILENAME)
+    graph_path = graph_path_for_index(path)
     graph = None
     if os.path.exists(graph_path):
         with open(graph_path, "r", encoding="utf-8") as handle:
             graph = json.load(handle)
+        if not isinstance(graph, dict):
+            raise ValueError(f"memory graph is not a JSON object: {graph_path}")
     return prepare_recall_index(data, path=path, graph=graph)
 
 
@@ -151,10 +207,26 @@ def prepare_recall_index(data, *, path="", graph=None):
     """Validate already-read index data and attach optional graph metadata."""
     if not isinstance(data, dict):
         raise ValueError(f"recall index is not a JSON object: {path}")
+    data = {
+        key: value
+        for key, value in data.items()
+        if key not in RUNTIME_METADATA_FIELDS
+    }
     validate_recall_index(data)
     data["_path"] = str(path or "")
-    if isinstance(graph, dict):
+    if graph is not None:
+        if not isinstance(graph, dict):
+            raise ValueError("memory graph must be a JSON object")
+        if graph.get("schema_version") == "3.0" and not data.get("generation_id"):
+            raise ValueError("recall index generation_id is required for Graph v3")
+        data["_graph_quality"] = validate_memory_graph(
+            graph,
+            data.get("units"),
+            allow_legacy=False,
+            expected_generation_id=data.get("generation_id", ""),
+        )
         data["_graph"] = graph
+        data["_graph_validated"] = True
     return data
 
 
@@ -195,7 +267,7 @@ def recall(
             continue
         if not _unit_allowed(unit, project, normalized_allowed):
             continue
-        eligible_units.append(unit)
+        eligible_units.append(enrich_runtime_unit(unit))
     units_by_id = {
         unit["id"]: unit
         for unit in eligible_units
@@ -282,14 +354,30 @@ def recall(
         allowed_projects=normalized_allowed,
     )
     graph_scores = {
-        item["id"]: item["score"]
+        item["id"]: float(item.get("graph_score", item.get("score", 0)) or 0)
         for item in graph_expanded
-        if item.get("id") not in anchored_ids and item.get("match_kind") == "graph"
+        if item.get("id")
+        and (
+            item.get("match_kind") == "graph"
+            or item.get("related_path")
+        )
     }
     result_by_id = {item["id"]: item for item in direct_results}
     for item in graph_expanded:
         if item.get("id") in graph_scores:
-            result_by_id.setdefault(item["id"], item)
+            existing = result_by_id.get(item["id"])
+            if existing is None:
+                result_by_id[item["id"]] = item
+                continue
+            for key in (
+                "graph_score",
+                "related_confidence",
+                "related_path",
+                "related_seed",
+                "related_via",
+            ):
+                if key in item:
+                    existing[key] = item[key]
 
     experience_scores = {}
     if has_experience_intent(
@@ -348,6 +436,13 @@ def recall(
         temporal_intent=temporal_intent,
     )
 
+    protected_insight_ids = {
+        item.get("id")
+        for item in results
+        if item.get("id")
+        and item.get("type") == "insight"
+        and float(type_boosts.get("insight", 0) or 0) > 0
+    }
     if results and relative_score_threshold:
         relative_cutoff = max(item["score"] for item in results) * relative_score_threshold
         results = [
@@ -355,6 +450,7 @@ def recall(
             for item in results
             if item["score"] >= relative_cutoff
             or item.get("id") in experience_scores
+            or item.get("id") in protected_insight_ids
         ]
 
     results.sort(
@@ -375,7 +471,7 @@ def recall(
     selected = bounded_result_selection(
         dedupe_results(results),
         int(limit or 8),
-        experience_ids=set(experience_scores),
+        reserved_ids=set(experience_scores) | protected_insight_ids,
     )
     for item in selected:
         item["why_recalled"] = explain_retrieval(item, query_terms)
@@ -383,11 +479,133 @@ def recall(
     return selected
 
 
-def extract_content_query(query_text):
+def recall_conversation_summaries(
+    query,
+    index,
+    allowed_projects,
+    limit=1,
+):
+    """Return at most one project-isolated summary through lexical evidence."""
+    validate_recall_index(index)
+    if not index.get("conversation_summaries"):
+        return []
+    try:
+        requested_limit = int(limit)
+    except (TypeError, ValueError):
+        requested_limit = 0
+    if requested_limit <= 0:
+        return []
+
+    query_text = normalize(query)
+    query_text = CONVERSATION_SUMMARY_INTENT_PATTERN.sub(" ", query_text)
+    query_text = CONVERSATION_SUMMARY_WEAK_ENGLISH_PATTERN.sub(" ", query_text)
+    if _conversation_summary_query_is_generic(query_text):
+        return []
+    content_query = extract_content_query(
+        query_text,
+        strip_type_intents=False,
+    )
+    query_terms = set(extract_terms(content_query, limit=40))
+    if not content_query or not query_terms:
+        return []
+
+    normalized_allowed = _canonical_projects(allowed_projects)
+    eligible = []
+    for record in index["conversation_summaries"]:
+        if not _unit_allowed(record, "", normalized_allowed):
+            continue
+        trusted_search_text = conversation_summary_search_text(record)
+        scoring_record = dict(record)
+        scoring_record["summary"] = trusted_search_text
+        scoring_record["terms"] = extract_terms(trusted_search_text)
+        if not _summary_has_lexical_anchor(
+            content_query,
+            query_terms,
+            scoring_record["terms"],
+        ):
+            continue
+        eligible.append((record, scoring_record))
+    if not eligible:
+        return []
+
+    term_weights = query_term_weights(
+        query_terms,
+        [scoring_record for _record, scoring_record in eligible],
+    )
+    ranked = []
+    for record, scoring_record in eligible:
+        score = score_unit(
+            scoring_record,
+            content_query,
+            query_terms,
+            term_weights=term_weights,
+        )
+        if score <= 0:
+            continue
+        result = dict(record)
+        result["score"] = round(float(score), 6)
+        result["match_kind"] = "conversation_summary"
+        ranked.append(result)
+    ranked.sort(
+        key=lambda item: (
+            float(item.get("score") or 0),
+            str(item.get("date") or ""),
+            str(item.get("title") or ""),
+            str(item.get("session_id") or ""),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    selected = ranked[:1]
+    for rank, result in enumerate(selected, 1):
+        result["retrieval_channels"] = ["conversation_summary"]
+        result["retrieval_evidence"] = {
+            "conversation_summary": {
+                "rank": rank,
+                "raw_score": result["score"],
+            }
+        }
+    return selected
+
+
+def _summary_has_lexical_anchor(content_query, query_terms, summary_terms):
+    normalized_query = normalize(content_query)
+    normalized_summary_terms = [
+        normalize(term)
+        for term in summary_terms
+        if normalize(term)
+    ]
+    for query_term in expand_compound_terms(query_terms):
+        normalized_term = normalize(query_term)
+        if not normalized_term:
+            continue
+        if any(
+            normalized_term in summary_term
+            or summary_term in normalized_query
+            for summary_term in normalized_summary_terms
+        ):
+            return True
+    return False
+
+
+def _conversation_summary_query_is_generic(query_text):
+    query_text = normalize(query_text)
+    return (
+        not query_text
+        or bool(
+            CONVERSATION_SUMMARY_GENERIC_CHINESE_PATTERN.fullmatch(
+                query_text
+            )
+        )
+    )
+
+
+def extract_content_query(query_text, *, strip_type_intents=True):
     """Remove retrieval intent words before building content anchors."""
     text = normalize(query_text)
-    for _, pattern in TYPE_INTENT_RULES:
-        text = pattern.sub(" ", text)
+    if strip_type_intents:
+        for _, pattern in TYPE_INTENT_RULES:
+            text = pattern.sub(" ", text)
     for pattern in (
         INVENTORY_QUERY_PATTERN,
         LATEST_QUERY_PATTERN,
@@ -624,6 +842,15 @@ def fuse_rankings(
                 detail["raw_score"] = round(float(raw_score or 0), 6)
             if channel == "graph":
                 detail["via"] = str(result_by_id[unit_id].get("related_via") or "")
+                detail["seed"] = str(
+                    result_by_id[unit_id].get("related_seed") or ""
+                )
+                confidence = result_by_id[unit_id].get("related_confidence")
+                if confidence is not None:
+                    detail["confidence"] = round(float(confidence), 6)
+                path = result_by_id[unit_id].get("related_path")
+                if path:
+                    detail["path"] = path
             if channel == "experience":
                 detail["via"] = str(
                     result_by_id[unit_id].get("related_experience") or ""
@@ -631,6 +858,7 @@ def fuse_rankings(
             evidence.setdefault(unit_id, {})[channel] = detail
 
     results = []
+    result_scores = {}
     for unit_id, result in result_by_id.items():
         unit_evidence = evidence.get(unit_id, {})
         if not unit_evidence:
@@ -649,7 +877,11 @@ def fuse_rankings(
             float(channel_scores.get("structured", {}).get(unit_id, 0)),
             100,
         )
-        anchor_quality = lexical_quality or max(structured_quality, 1)
+        graph_quality = min(
+            float(channel_scores.get("graph", {}).get(unit_id, 0)),
+            100,
+        )
+        anchor_quality = lexical_quality or structured_quality or graph_quality or 1
         item["fusion_score"] = round(fusion_score, 6)
         item["score"] = round(anchor_quality * (1 + fusion_score / 20), 6)
         direct_channels = {"lexical", "structured", "type", "temporal"}
@@ -660,6 +892,19 @@ def fuse_rankings(
         else:
             item["match_kind"] = "graph"
         results.append(item)
+        result_scores[unit_id] = item["score"]
+
+    for item in results:
+        if not item.get("related_path"):
+            continue
+        seed_score = float(result_scores.get(item.get("related_seed"), 0) or 0)
+        if not seed_score:
+            continue
+        confidence = float(item.get("related_confidence") or 0)
+        hop_decay = 0.85 ** max(0, len(item["related_path"]) - 1)
+        calibrated_score = seed_score * confidence * hop_decay
+        if calibrated_score > item["score"]:
+            item["score"] = round(calibrated_score, 6)
     return results
 
 
@@ -738,7 +983,7 @@ def is_runtime_unit(unit):
 
 
 def expand_graph_results(index, direct_results, project="", *, allowed_projects=None):
-    """Add units from the same or explicitly linked note, with bounded weights."""
+    """Add units only through revision-safe, explicitly declared relations."""
     graph = index.get("_graph") or {}
     edges = graph.get("edges") or []
     if not direct_results or not edges:
@@ -749,66 +994,60 @@ def expand_graph_results(index, direct_results, project="", *, allowed_projects=
         for unit in index.get("units", [])
         if unit.get("id") and is_runtime_unit(unit)
     }
-    units_by_note = {}
-    for unit in sorted(units.values(), key=lambda item: str(item.get("id", ""))):
-        source_note = unit.get("source_note")
-        if source_note:
-            units_by_note.setdefault(source_note, []).append(unit)
-
-    linked_notes = {}
-    recorded_notes = {}
-    for edge in edges:
-        relation = edge.get("relation")
-        source = edge.get("source")
-        target = edge.get("target")
-        if not source or not target:
-            continue
-        if relation == "links_to":
-            linked_notes.setdefault(source, set()).add(target)
-            linked_notes.setdefault(target, set()).add(source)
-        elif relation == "recorded_in":
-            recorded_notes.setdefault(source, set()).add(target)
 
     by_id = {item.get("id"): item for item in direct_results}
-    for direct in sorted(direct_results, key=lambda item: str(item.get("id", ""))):
-        source_notes = set()
-        if direct.get("source_note"):
-            source_notes.add(direct["source_note"])
-        source_notes.update(recorded_notes.get(direct.get("id"), set()))
 
-        note_scores = {
-            note_id: GRAPH_RELATION_WEIGHTS["recorded_in"]
-            for note_id in sorted(source_notes)
-        }
-        for note_id in sorted(source_notes):
-            for linked_note in sorted(linked_notes.get(note_id, set())):
-                note_scores[linked_note] = max(
-                    note_scores.get(linked_note, 0),
-                    GRAPH_RELATION_WEIGHTS["links_to"],
-                )
-
-        for note_id, graph_score in sorted(note_scores.items()):
-            for unit in sorted(
-                units_by_note.get(note_id, []),
-                key=lambda item: str(item.get("id", "")),
-            ):
-                unit_id = unit.get("id")
-                if not unit_id or unit_id == direct.get("id"):
-                    continue
-                if direct.get("type") == "insight" and unit.get("type") == "insight":
-                    continue
-                if not _unit_allowed(unit, project, allowed_projects):
-                    continue
-                existing = by_id.get(unit_id)
-                if existing:
-                    if existing.get("match_kind") == "graph":
-                        existing["score"] = max(existing["score"], graph_score)
-                    continue
-                result = dict(unit)
-                result["score"] = graph_score
-                result["match_kind"] = "graph"
-                result["related_via"] = note_id
-                by_id[unit_id] = result
+    direct_scores = {
+        item.get("id"): float(item.get("score") or 0)
+        for item in direct_results
+        if item.get("id")
+    }
+    allowed_graph_ids = {
+        unit_id
+        for unit_id, unit in units.items()
+        if _unit_allowed(unit, project, allowed_projects)
+    }
+    semantic_paths = semantic_memory_paths(
+        graph,
+        [item.get("id") for item in direct_results],
+        units.values(),
+        max_hops=2,
+        validated=bool(index.get("_graph_validated")),
+        allowed_node_ids=allowed_graph_ids,
+        seed_scores=direct_scores,
+    )
+    for unit_id, match in sorted(semantic_paths.items()):
+        unit = units.get(unit_id)
+        if (
+            not unit
+            or not _unit_allowed(unit, project, allowed_projects)
+        ):
+            continue
+        confidence = float(match.get("confidence") or 0)
+        hop_decay = 0.85 ** max(0, len(match["path"]) - 1)
+        graph_score = (
+            direct_scores.get(match.get("seed"), 0)
+            * confidence
+            * hop_decay
+        )
+        existing = by_id.get(unit_id)
+        if existing and float(existing.get("score") or 0) >= graph_score:
+            continue
+        result = dict(existing or unit)
+        result["score"] = max(float(result.get("score") or 0), graph_score)
+        result["graph_score"] = graph_score
+        result["match_kind"] = (
+            result.get("match_kind")
+            if existing
+            else "graph"
+        )
+        result["related_path"] = list(match["path"])
+        result["related_seed"] = match["seed"]
+        result["related_confidence"] = confidence
+        result["related_via"] = " -> ".join(
+            step["relation"] for step in match["path"]
+        )
+        by_id[unit_id] = result
 
     return list(by_id.values())
 
@@ -822,11 +1061,54 @@ def validate_recall_index(index):
         )
     if not isinstance(index.get("units"), list):
         raise ValueError("recall index units must be a list")
+    seen_ids = set()
+    for unit in index["units"]:
+        unit_id = str(unit.get("id") or "") if isinstance(unit, dict) else ""
+        if unit_id and unit_id in seen_ids:
+            raise ValueError(f"duplicate recall unit ID: {unit_id}")
+        if unit_id:
+            seen_ids.add(unit_id)
     if "experience_bundles" in index and not isinstance(
         index.get("experience_bundles"), list
     ):
         raise ValueError("recall index experience_bundles must be a list")
     validate_experience_bundles(index.get("experience_bundles"), index.get("units"))
+    if "conversation_summaries" not in index:
+        if "conversation_summary_count" in index:
+            raise ValueError(
+                "recall index conversation_summary_count requires "
+                "conversation_summaries"
+            )
+        return
+    summaries = index.get("conversation_summaries")
+    if not isinstance(summaries, list):
+        raise ValueError("recall index conversation_summaries must be a list")
+    count = index.get("conversation_summary_count")
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count != len(summaries)
+    ):
+        raise ValueError("recall index conversation summary count is invalid")
+    seen_summary_ids = set()
+    seen_session_ids = set()
+    for record in summaries:
+        if not _valid_indexed_conversation_summary(record):
+            raise ValueError("recall index conversation summary is invalid")
+        if record["id"] in seen_ids:
+            raise ValueError(
+                "conversation summary ID collision with formal recall unit"
+            )
+        if record["id"] in seen_summary_ids:
+            raise ValueError("duplicate conversation summary ID")
+        if record["session_id"] in seen_session_ids:
+            raise ValueError("duplicate conversation summary session ID")
+        seen_summary_ids.add(record["id"])
+        seen_session_ids.add(record["session_id"])
+
+
+def _valid_indexed_conversation_summary(record):
+    return validate_conversation_summary_record(record)
 
 
 def _canonical_projects(projects):
@@ -843,6 +1125,8 @@ def _canonical_projects(projects):
 
 def _unit_allowed(unit, project, allowed_projects):
     if project:
+        if allowed_projects is not None and project not in allowed_projects:
+            return False
         return unit.get("project") == project
     if allowed_projects is None:
         return True
@@ -866,15 +1150,15 @@ def dedupe_results(results):
     return unique
 
 
-def bounded_result_selection(results, limit, *, experience_ids=None):
-    """Reserve explicit experience companions without dropping every anchor."""
+def bounded_result_selection(results, limit, *, reserved_ids=None):
+    """Reserve bounded explicit companions without dropping every anchor."""
     limit = max(0, int(limit or 0))
     if not limit:
         return []
-    experience_ids = set(experience_ids or [])
-    if not experience_ids or limit < 2:
+    reserved_ids = set(reserved_ids or [])
+    if not reserved_ids or limit < 2:
         return list(results[:limit])
-    companions = [item for item in results if item.get("id") in experience_ids]
+    companions = [item for item in results if item.get("id") in reserved_ids]
     reserve = min(2, len(companions), limit - 1)
     required = companions[:reserve]
     required_ids = {item.get("id") for item in required}
@@ -930,7 +1214,12 @@ def explain_retrieval(item, query_terms):
         }.get(mode, "时间条件匹配")
         reasons.append(temporal_reason)
     if "graph" in channels:
-        reasons.append("知识图谱关联")
+        path = item.get("related_path") or []
+        if path:
+            relations = " → ".join(step.get("relation", "") for step in path)
+            reasons.append(f"关系路径（{relations}）")
+        else:
+            reasons.append("知识图谱关联")
     if "experience" in channels:
         reasons.append("同一任务经验链")
     return "；".join(reasons) or "正式记忆直接匹配"

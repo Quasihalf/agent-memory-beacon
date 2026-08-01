@@ -743,7 +743,10 @@ def _records_are_duplicates(left, right):
     right_tokens = _semantic_tokens(right_text)
     similarity = _jaccard(left_tokens, right_tokens)
     if left.get("type") != "error":
-        return similarity >= 0.82
+        return similarity >= 0.82 or (
+            left.get("type") == "decision"
+            and _truncated_summary_match(left_text, right_text)
+        )
 
     left_modes = _failure_modes(left_text)
     right_modes = _failure_modes(right_text)
@@ -895,7 +898,29 @@ def _duplicate_reason(left, right):
         )
         if anchors:
             return "same_failure_anchor:" + ",".join(anchors[:3])
+    if (
+        left.get("type") == "decision"
+        and _truncated_summary_match(left.get("summary"), right.get("summary"))
+    ):
+        return "truncated_summary_covered"
     return "high_semantic_overlap"
+
+
+def _truncated_summary_match(left, right):
+    left = _one_line(left)
+    right = _one_line(right)
+    shorter, longer = sorted((left, right), key=len)
+    if (
+        len(shorter) < 24
+        or not shorter.endswith(("...", "…"))
+        or len(longer) <= len(shorter)
+    ):
+        return False
+    shorter_tokens = _semantic_tokens(shorter)
+    longer_tokens = _semantic_tokens(longer)
+    if len(shorter_tokens) < 4:
+        return False
+    return len(shorter_tokens & longer_tokens) / len(shorter_tokens) >= 0.8
 
 
 def _representative_rank(item):

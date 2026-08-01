@@ -122,6 +122,8 @@ Use one line at the end of the reply:
 [LEARN:<reusable principle>| novelty:<what is non-obvious>| transfer:<scene1,scene2>| boundary:<when it fails or must not apply>| evidence:<exact user-authored excerpt>| source:user| project:<project-slug>| scope:<project|global>]
 ```
 
+Optional relationship fields may be appended as `supports:<memory-id,...>`, `operationalized_as:<memory-id,...>`, or `related_to:<memory-id,...>`. Use them only for exact stable IDs shown in this task's `[MEMORY_REFRESH]`; omit uncertain fields, never infer an ID from a title, and never invent a relationship merely to create a graph edge.
+
 **When**: The user contributes a non-obvious, reusable idea, analogy, mechanism, or viewpoint that can broaden future problem solving. Codex judges semantic novelty; the harvester verifies source, shape, and duplication.
 
 A complete, well-grounded high-value idea may become a formal `seed` on its first and only appearance. 一次性启发不需要先重复；repetition reinforces it but is not an admission requirement. Incomplete or uncertain ideas may be routed to `04-Feedback/_insight-candidates/` and are never recalled until formal.
