@@ -177,6 +177,7 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
                     script_path=old_script,
                     config_path=config,
                     user_id=user_id,
+                    task_name=task_name,
                 )
                 self.assertTrue(
                     install_beacon_sync._same_windows_task_xml(old_xml, expected_old)
@@ -194,6 +195,7 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
                     script_path=new_script,
                     config_path=config,
                     user_id=user_id,
+                    task_name=task_name,
                 )
                 self.assertTrue(
                     install_beacon_sync._same_windows_task_xml(

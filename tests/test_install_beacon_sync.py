@@ -632,6 +632,51 @@ class InstallBeaconSyncTests(unittest.TestCase):
         self.assertIn("-X utf8", hook_command)
         self.assertIn("-B", hook_command)
 
+    def test_windows_task_registration_uri_tracks_custom_task_name(self):
+        task_name = r"Agent Memory Beacon CI 1234"
+        xml = install_beacon_sync.build_windows_task_xml(
+            python_path=self.python,
+            script_path=self.script,
+            config_path=self.config,
+            user_id=r"DESKTOP\demo",
+            task_name=task_name,
+        )
+        root = ET.fromstring(xml)
+
+        self.assertEqual(
+            root.findtext(
+                "t:RegistrationInfo/t:URI",
+                namespaces=TASK_NS,
+            ),
+            rf"\{task_name}",
+        )
+        self.assertTrue(
+            install_beacon_sync._owned_windows_task_xml(
+                xml,
+                task_name=task_name,
+            )
+        )
+        runner, state, calls, _payloads = self._windows_task_runner(None)
+
+        result = install_beacon_sync.install_windows_scheduler(
+            python_path=self.python,
+            script_path=self.script,
+            config_path=self.config,
+            user_id=r"DESKTOP\demo",
+            task_name=task_name,
+            command_runner=runner,
+        )
+
+        self.assertTrue(result["changed"])
+        self.assertTrue(
+            install_beacon_sync._owned_windows_task_xml(
+                state["xml"],
+                task_name=task_name,
+            )
+        )
+        create = next(arguments for arguments in calls if "/Create" in arguments)
+        self.assertEqual(create[create.index("/TN") + 1], task_name)
+
     def test_current_windows_user_reads_process_token_and_releases_resources(self):
         class Box:
             def __init__(self, value=0):
@@ -1443,12 +1488,14 @@ class InstallBeaconSyncTests(unittest.TestCase):
         )
 
     def test_windows_task_restore_rejects_fake_success(self):
+        task_name = "Agent Memory Beacon Restore Test"
         previous = install_beacon_sync.build_windows_task_xml(
             python_path=self.python,
             script_path=self.script,
             config_path=self.config,
             user_id="S-1-5-21-100-200-300-1001",
             interval_minutes=9,
+            task_name=task_name,
         )
         current = install_beacon_sync.build_windows_task_xml(
             python_path=self.python,
@@ -1456,6 +1503,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
             config_path=self.config,
             user_id="S-1-5-21-100-200-300-1001",
             interval_minutes=1,
+            task_name=task_name,
         )
         calls = []
 
@@ -1473,7 +1521,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
         ):
             install_beacon_sync._restore_windows_task(
                 runner,
-                "Agent Memory Beacon Restore Test",
+                task_name,
                 previous,
                 expected_current=current,
             )

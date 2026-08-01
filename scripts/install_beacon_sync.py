@@ -103,6 +103,7 @@ def build_windows_task_xml(
     config_path,
     user_id,
     interval_minutes=1,
+    task_name=WINDOWS_TASK_NAME,
 ):
     interval = _positive_int(interval_minutes, "interval_minutes")
     user_id = str(user_id or "").strip()
@@ -111,7 +112,7 @@ def build_windows_task_xml(
     ET.register_namespace("", TASK_NAMESPACE)
     task = ET.Element(_tag("Task"), {"version": "1.4"})
     registration = ET.SubElement(task, _tag("RegistrationInfo"))
-    ET.SubElement(registration, _tag("URI")).text = WINDOWS_TASK_OWNER_URI
+    ET.SubElement(registration, _tag("URI")).text = _windows_task_uri(task_name)
     ET.SubElement(
         registration,
         _tag("Description"),
@@ -433,6 +434,7 @@ def install_windows_scheduler(
             config_path=config_path,
             user_id=user_id,
             interval_minutes=interval_minutes,
+            task_name=task_name,
         )
     )
     try:
@@ -477,7 +479,10 @@ def _install_windows_scheduler_from_state(
     command_runner,
     existing_xml,
 ):
-    if existing_xml is not None and not _owned_windows_task_xml(existing_xml):
+    if existing_xml is not None and not _owned_windows_task_xml(
+        existing_xml,
+        task_name=task_name,
+    ):
         raise InstallerError(
             f"Windows task is not owned by Agent Memory Beacon: {task_name}"
         )
@@ -496,6 +501,7 @@ def _install_windows_scheduler_from_state(
         config_path=config_path,
         user_id=user_id,
         interval_minutes=interval_minutes,
+        task_name=task_name,
     )
     if (
         existing_xml is not None
@@ -583,6 +589,7 @@ def install_windows_components(
             config_path=config_path,
             user_id=user_id,
             interval_minutes=interval_minutes,
+            task_name=task_name,
         )
     )
     attempted_hook_plans = []
@@ -851,7 +858,10 @@ def _restore_windows_task(
     expected_current=_UNSET,
 ):
     current_xml = _query_windows_task(command_runner, task_name)
-    if current_xml is not None and not _owned_windows_task_xml(current_xml):
+    if current_xml is not None and not _owned_windows_task_xml(
+        current_xml,
+        task_name=task_name,
+    ):
         raise InstallerError(
             f"refusing to overwrite foreign Windows task during rollback: {task_name}"
         )
@@ -1046,11 +1056,11 @@ def _normalized_task_xml(value):
     return ET.tostring(root, encoding="utf-8")
 
 
-def _owned_windows_task_xml(value):
+def _owned_windows_task_xml(value, *, task_name=WINDOWS_TASK_NAME):
     root = _task_xml_root(value)
     return (
         root.findtext(_tag("RegistrationInfo") + "/" + _tag("URI"))
-        == WINDOWS_TASK_OWNER_URI
+        == _windows_task_uri(task_name)
         and root.findtext(
             _tag("RegistrationInfo") + "/" + _tag("Description")
         )
@@ -1152,6 +1162,13 @@ def _durable_unlink(path):
 
 def _tag(name):
     return f"{{{TASK_NAMESPACE}}}{name}"
+
+
+def _windows_task_uri(task_name):
+    name = str(task_name or "").strip()
+    if not name:
+        raise ValueError("Windows task_name is required")
+    return name if name.startswith("\\") else f"\\{name}"
 
 
 def _positive_int(value, name):
