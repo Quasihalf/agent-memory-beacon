@@ -1388,6 +1388,12 @@ def _runtime_release_file_paths():
     )
 
 
+def _directory_entry_link_count(entry, info):
+    if os.name == "nt":
+        info = os.lstat(entry.path)
+    return getattr(info, "st_nlink", 1)
+
+
 def _actual_runtime_release_file_paths(runtime_root):
     runtime_root = Path(runtime_root)
     expected_files = _runtime_release_file_paths()
@@ -1452,7 +1458,7 @@ def _actual_runtime_release_file_paths(runtime_root):
                 raise ValueError(
                     f"runtime release tree contains a special file: {relative}"
                 )
-            if getattr(info, "st_nlink", 1) != 1:
+            if _directory_entry_link_count(entry, info) != 1:
                 raise ValueError(f"runtime release tree contains a hard link: {relative}")
             actual_files.add(relative)
 

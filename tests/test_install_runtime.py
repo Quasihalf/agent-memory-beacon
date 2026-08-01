@@ -1285,6 +1285,21 @@ class RuntimeInstallerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "size limit"):
                     install_runtime._windows_runtime_environment_identity(runtime)
 
+    def test_windows_directory_entry_link_count_rechecks_cached_zero(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "ordinary-file.txt"
+            path.write_bytes(b"ordinary file\n")
+            entry = SimpleNamespace(path=str(path))
+            cached_info = SimpleNamespace(st_nlink=0)
+
+            with patch.object(install_runtime.os, "name", "nt"):
+                link_count = install_runtime._directory_entry_link_count(
+                    entry,
+                    cached_info,
+                )
+
+            self.assertEqual(link_count, 1)
+
     def test_pyvenv_identity_accepts_default_windows_copies_and_requires_no_pip(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
