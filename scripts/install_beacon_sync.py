@@ -43,6 +43,19 @@ MAX_TASK_XML_BYTES = 4 * 1024 * 1024
 _TASK_XML_UNORDERED_CONTAINERS = frozenset(
     ("Task", "RegistrationInfo", "Settings")
 )
+_TASK_XML_DEFAULT_SETTINGS = {
+    "AllowHardTerminate": "true",
+    "Enabled": "true",
+    "Hidden": "false",
+    "Priority": "7",
+    "RunOnlyIfNetworkAvailable": "false",
+    "UseUnifiedSchedulingEngine": "false",
+    "WakeToRun": "false",
+}
+_TASK_XML_DEFAULT_IDLE_SETTINGS = {
+    "RestartOnIdle": "false",
+    "StopOnIdleEnd": "true",
+}
 WINDOWS_TASK_MISSING_MARKERS = (
     "cannot find the file specified",
     "specified task name does not exist",
@@ -1065,7 +1078,33 @@ def _normalized_task_xml_root(value):
         name = element.tag.rsplit("}", 1)[-1]
         if name in _TASK_XML_UNORDERED_CONTAINERS:
             element[:] = sorted(element, key=lambda child: child.tag)
+    _remove_windows_task_xml_defaults(root)
     return root
+
+
+def _remove_windows_task_xml_defaults(root):
+    settings = root.find(_tag("Settings"))
+    if settings is None:
+        return
+    _remove_default_task_xml_children(settings, _TASK_XML_DEFAULT_SETTINGS)
+    idle = settings.find(_tag("IdleSettings"))
+    if idle is None:
+        return
+    _remove_default_task_xml_children(idle, _TASK_XML_DEFAULT_IDLE_SETTINGS)
+    if not idle.attrib and not list(idle) and not str(idle.text or "").strip():
+        settings.remove(idle)
+
+
+def _remove_default_task_xml_children(parent, defaults):
+    for child in list(parent):
+        name = child.tag.rsplit("}", 1)[-1]
+        if (
+            name in defaults
+            and not child.attrib
+            and not list(child)
+            and str(child.text or "").strip() == defaults[name]
+        ):
+            parent.remove(child)
 
 
 def _windows_task_xml_difference(actual, expected):

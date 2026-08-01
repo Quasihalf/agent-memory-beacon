@@ -704,6 +704,45 @@ class InstallBeaconSyncTests(unittest.TestCase):
             install_beacon_sync._same_windows_task_xml(reordered, xml)
         )
 
+    def test_windows_task_comparison_normalizes_scheduler_default_settings(self):
+        expected = install_beacon_sync.build_windows_task_xml(
+            python_path=self.python,
+            script_path=self.script,
+            config_path=self.config,
+            user_id=r"DESKTOP\demo",
+        )
+        actual_root = ET.fromstring(expected)
+        settings = actual_root.find("t:Settings", TASK_NS)
+        for name in (
+            "AllowHardTerminate",
+            "Enabled",
+            "Hidden",
+            "Priority",
+            "RunOnlyIfNetworkAvailable",
+            "WakeToRun",
+        ):
+            settings.remove(settings.find(f"t:{name}", TASK_NS))
+        namespace = install_beacon_sync.TASK_NAMESPACE
+        idle = ET.SubElement(settings, f"{{{namespace}}}IdleSettings")
+        ET.SubElement(idle, f"{{{namespace}}}StopOnIdleEnd").text = "true"
+        ET.SubElement(idle, f"{{{namespace}}}RestartOnIdle").text = "false"
+        unified = ET.SubElement(
+            settings,
+            f"{{{namespace}}}UseUnifiedSchedulingEngine",
+        )
+        unified.text = "false"
+        actual = ET.tostring(actual_root, encoding="unicode")
+
+        self.assertTrue(
+            install_beacon_sync._same_windows_task_xml(actual, expected)
+        )
+
+        unified.text = "true"
+        non_default = ET.tostring(actual_root, encoding="unicode")
+        self.assertFalse(
+            install_beacon_sync._same_windows_task_xml(non_default, expected)
+        )
+
     def test_windows_task_difference_lists_mismatched_child_names(self):
         expected_root = ET.fromstring(
             install_beacon_sync.build_windows_task_xml(
