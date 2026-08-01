@@ -255,10 +255,10 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "Windows-only synchronization smoke tests")
 class BeaconSyncWindowsTests(unittest.TestCase):
-    def test_current_task_user_is_resolved_to_sid(self):
+    def test_current_task_user_is_resolved_to_account_name(self):
         self.assertRegex(
             install_beacon_sync._current_windows_user(),
-            r"^S-[0-9]+(?:-[0-9]+)+$",
+            r"^[^\\]+\\[^\\]+$",
         )
 
     def test_current_task_user_ignores_account_environment(self):

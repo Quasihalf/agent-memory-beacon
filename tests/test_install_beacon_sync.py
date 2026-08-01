@@ -771,6 +771,29 @@ class InstallBeaconSyncTests(unittest.TestCase):
             install_beacon_sync._same_windows_task_xml(non_default, expected)
         )
 
+    def test_windows_task_comparison_normalizes_user_id_case_only(self):
+        expected = install_beacon_sync.build_windows_task_xml(
+            python_path=self.python,
+            script_path=self.script,
+            config_path=self.config,
+            user_id=r"DESKTOP\Demo",
+        )
+        actual_root = ET.fromstring(expected)
+        user_ids = actual_root.findall(".//t:UserId", TASK_NS)
+        for user_id in user_ids:
+            user_id.text = r"desktop\demo"
+        actual = ET.tostring(actual_root, encoding="unicode")
+
+        self.assertTrue(
+            install_beacon_sync._same_windows_task_xml(actual, expected)
+        )
+
+        user_ids[0].text = r"desktop\other"
+        different_user = ET.tostring(actual_root, encoding="unicode")
+        self.assertFalse(
+            install_beacon_sync._same_windows_task_xml(different_user, expected)
+        )
+
     def test_windows_task_difference_lists_mismatched_child_names(self):
         expected_root = ET.fromstring(
             install_beacon_sync.build_windows_task_xml(
@@ -886,20 +909,43 @@ class InstallBeaconSyncTests(unittest.TestCase):
             buffer.sid = 5678
             return True
 
-        def convert(_sid, string_sid):
-            self.assertEqual(_sid, 5678)
-            string_sid.value = "S-1-5-21-100-200-300-1001"
+        def lookup(
+            _system_name,
+            sid,
+            name,
+            name_size,
+            domain,
+            domain_size,
+            sid_use,
+        ):
+            self.assertEqual(sid, 5678)
+            sid_use.value = 1
+            if name is None:
+                self.assertIsNone(domain)
+                name_size.value = len("runneradmin") + 1
+                domain_size.value = len("RUNNERVM") + 1
+                return False
+            self.assertEqual(name_size.value, len("runneradmin") + 1)
+            self.assertEqual(domain_size.value, len("RUNNERVM") + 1)
+            name.value = "runneradmin"
+            domain.value = "RUNNERVM"
             return True
+
+        def legacy_convert_must_not_run(_sid, _string_sid):
+            self.assertEqual(_sid, 5678)
+            raise AssertionError("ConvertSidToStringSidW must not be used")
 
         get_current_process = Function(lambda: -1)
         open_token = Function(open_process_token)
         get_token = Function(get_token_information)
-        convert_function = Function(convert)
+        lookup_function = Function(lookup)
+        convert_function = Function(legacy_convert_must_not_run)
         close_handle = Function(lambda _handle: True)
         local_free = Function(lambda _pointer: 0)
         advapi32 = SimpleNamespace(
             OpenProcessToken=open_token,
             GetTokenInformation=get_token,
+            LookupAccountSidW=lookup_function,
             ConvertSidToStringSidW=convert_function,
         )
         kernel32 = SimpleNamespace(
@@ -910,6 +956,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
         wintypes = SimpleNamespace(
             LPVOID=object(),
             LPWSTR=Box,
+            LPCWSTR=Box,
             DWORD=Box,
             BOOL=object(),
             HANDLE=Box,
@@ -923,6 +970,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
         ctypes_module.POINTER = lambda value: ("pointer", value)
         ctypes_module.byref = lambda value: value
         ctypes_module.create_string_buffer = TokenBuffer
+        ctypes_module.create_unicode_buffer = lambda _size: Box("")
         ctypes_module.get_last_error = lambda: 122
         ctypes_module.WinError = lambda error: OSError(error, "win32")
         ctypes_module.cast = lambda value, _kind: (
@@ -946,17 +994,17 @@ class InstallBeaconSyncTests(unittest.TestCase):
                 {"ctypes": ctypes_module, "ctypes.wintypes": wintypes},
             ),
         ):
-            sid = install_beacon_sync._current_windows_user()
+            account = install_beacon_sync._current_windows_user()
 
-        self.assertEqual(sid, "S-1-5-21-100-200-300-1001")
+        self.assertEqual(account, r"RUNNERVM\runneradmin")
         self.assertEqual(get_current_process.calls, [()])
         self.assertEqual(len(open_token.calls), 1)
         self.assertEqual(len(get_token.calls), 2)
         self.assertEqual(get_token.calls[0][2:4], (None, 0))
         self.assertEqual(len(close_handle.calls), 1)
-        self.assertEqual(local_free.argtypes, (wintypes.HLOCAL,))
-        self.assertIs(local_free.restype, wintypes.HLOCAL)
-        self.assertEqual(len(local_free.calls), 1)
+        self.assertEqual(len(lookup_function.calls), 2)
+        self.assertEqual(len(convert_function.calls), 0)
+        self.assertEqual(len(local_free.calls), 0)
         self.assertEqual(close_handle.argtypes, (wintypes.HANDLE,))
         self.assertIs(close_handle.restype, wintypes.BOOL)
 

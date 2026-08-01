@@ -1092,6 +1092,8 @@ def _normalized_task_xml_root(value):
             element.attrib.clear()
             element.attrib.update(attributes)
         name = element.tag.rsplit("}", 1)[-1]
+        if name == "UserId" and element.text is not None:
+            element.text = element.text.casefold()
         if name in _TASK_XML_UNORDERED_CONTAINERS:
             element[:] = sorted(element, key=lambda child: child.tag)
     _remove_windows_task_xml_defaults(root)
@@ -1303,7 +1305,9 @@ def _positive_int(value, name):
 
 def _current_windows_user():
     if os.name != "nt":
-        raise InstallerError("Windows process token SID resolution requires Windows")
+        raise InstallerError(
+            "Windows process token account resolution requires Windows"
+        )
     import ctypes
     from ctypes import wintypes
 
@@ -1329,12 +1333,17 @@ def _current_windows_user():
     )
     get_token_information.restype = wintypes.BOOL
 
-    convert = advapi32.ConvertSidToStringSidW
-    convert.argtypes = (wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR))
-    convert.restype = wintypes.BOOL
-    local_free = kernel32.LocalFree
-    local_free.argtypes = (wintypes.HLOCAL,)
-    local_free.restype = wintypes.HLOCAL
+    lookup_account_sid = advapi32.LookupAccountSidW
+    lookup_account_sid.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.LPVOID,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    lookup_account_sid.restype = wintypes.BOOL
     close_handle = kernel32.CloseHandle
     close_handle.argtypes = (wintypes.HANDLE,)
     close_handle.restype = wintypes.BOOL
@@ -1379,17 +1388,51 @@ def _current_windows_user():
         )[0]
         if not sid_pointer:
             raise InstallerError("Windows process token returned an invalid SID")
-        string_sid = wintypes.LPWSTR()
-        if not convert(sid_pointer, ctypes.byref(string_sid)):
-            error = ctypes.get_last_error()
+        name_size = wintypes.DWORD()
+        domain_size = wintypes.DWORD()
+        sid_use = wintypes.DWORD()
+        lookup_account_sid(
+            None,
+            sid_pointer,
+            None,
+            ctypes.byref(name_size),
+            None,
+            ctypes.byref(domain_size),
+            ctypes.byref(sid_use),
+        )
+        error = ctypes.get_last_error()
+        if error != 122 or name_size.value <= 0:
             raise InstallerError(
-                "Windows process token SID conversion failed: "
+                "Windows process token account sizing failed: "
                 f"{ctypes.WinError(error)}"
             )
-        try:
-            sid = str(string_sid.value or "")
-        finally:
-            local_free(ctypes.cast(string_sid, wintypes.HLOCAL))
+        name_buffer = ctypes.create_unicode_buffer(name_size.value)
+        domain_buffer = (
+            ctypes.create_unicode_buffer(domain_size.value)
+            if domain_size.value > 0
+            else None
+        )
+        if not lookup_account_sid(
+            None,
+            sid_pointer,
+            name_buffer,
+            ctypes.byref(name_size),
+            domain_buffer,
+            ctypes.byref(domain_size),
+            ctypes.byref(sid_use),
+        ):
+            error = ctypes.get_last_error()
+            raise InstallerError(
+                "Windows process token account lookup failed: "
+                f"{ctypes.WinError(error)}"
+            )
+        account = str(name_buffer.value or "").strip()
+        domain = (
+            str(domain_buffer.value or "").strip()
+            if domain_buffer is not None
+            else ""
+        )
+        user_id = f"{domain}\\{account}" if domain else account
     except BaseException:
         close_handle(token)
         raise
@@ -1398,9 +1441,11 @@ def _current_windows_user():
         raise InstallerError(
             f"Windows process token close failed: {ctypes.WinError(error)}"
         )
-    if not sid.startswith("S-"):
-        raise InstallerError("Windows process token returned an invalid SID string")
-    return sid
+    if not account or not user_id:
+        raise InstallerError(
+            "Windows process token returned an invalid account name"
+        )
+    return user_id
 
 
 def _default_windows_runtime_root():
