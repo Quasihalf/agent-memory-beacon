@@ -588,6 +588,13 @@ class InstallBeaconSyncTests(unittest.TestCase):
             "IgnoreNew",
         )
         self.assertEqual(
+            root.findtext(
+                "t:Settings/t:UseUnifiedSchedulingEngine",
+                namespaces=TASK_NS,
+            ),
+            "true",
+        )
+        self.assertEqual(
             root.findtext("t:Principals/t:Principal/t:UserId", namespaces=TASK_NS),
             "DESKTOP\\demo",
         )
@@ -726,18 +733,20 @@ class InstallBeaconSyncTests(unittest.TestCase):
         idle = ET.SubElement(settings, f"{{{namespace}}}IdleSettings")
         ET.SubElement(idle, f"{{{namespace}}}StopOnIdleEnd").text = "true"
         ET.SubElement(idle, f"{{{namespace}}}RestartOnIdle").text = "false"
-        unified = ET.SubElement(
-            settings,
-            f"{{{namespace}}}UseUnifiedSchedulingEngine",
-        )
-        unified.text = "false"
+        unified = settings.find("t:UseUnifiedSchedulingEngine", TASK_NS)
+        if unified is None:
+            unified = ET.SubElement(
+                settings,
+                f"{{{namespace}}}UseUnifiedSchedulingEngine",
+            )
+        unified.text = "true"
         actual = ET.tostring(actual_root, encoding="unicode")
 
         self.assertTrue(
             install_beacon_sync._same_windows_task_xml(actual, expected)
         )
 
-        unified.text = "true"
+        unified.text = "false"
         non_default = ET.tostring(actual_root, encoding="unicode")
         self.assertFalse(
             install_beacon_sync._same_windows_task_xml(non_default, expected)

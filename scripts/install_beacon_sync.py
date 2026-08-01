@@ -163,6 +163,7 @@ def build_windows_task_xml(
         ("Enabled", "true"),
         ("Hidden", "false"),
         ("WakeToRun", "false"),
+        ("UseUnifiedSchedulingEngine", "true"),
         ("ExecutionTimeLimit", "PT10M"),
         ("Priority", "7"),
     ):
