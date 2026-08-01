@@ -740,6 +740,18 @@ class InstallBeaconSyncTests(unittest.TestCase):
                 f"{{{namespace}}}UseUnifiedSchedulingEngine",
             )
         unified.text = "true"
+        logon = actual_root.find("t:Triggers/t:LogonTrigger", TASK_NS)
+        logon.remove(logon.find("t:Enabled", TASK_NS))
+        ET.SubElement(logon, f"{{{namespace}}}Delay").text = "PT0M"
+        calendar = actual_root.find("t:Triggers/t:CalendarTrigger", TASK_NS)
+        calendar.remove(calendar.find("t:Enabled", TASK_NS))
+        random_delay = ET.SubElement(
+            calendar,
+            f"{{{namespace}}}RandomDelay",
+        )
+        random_delay.text = "PT0M"
+        repetition = calendar.find("t:Repetition", TASK_NS)
+        repetition.remove(repetition.find("t:StopAtDurationEnd", TASK_NS))
         actual = ET.tostring(actual_root, encoding="unicode")
 
         self.assertTrue(
@@ -747,6 +759,13 @@ class InstallBeaconSyncTests(unittest.TestCase):
         )
 
         unified.text = "false"
+        non_default = ET.tostring(actual_root, encoding="unicode")
+        self.assertFalse(
+            install_beacon_sync._same_windows_task_xml(non_default, expected)
+        )
+
+        unified.text = "true"
+        random_delay.text = "PT1M"
         non_default = ET.tostring(actual_root, encoding="unicode")
         self.assertFalse(
             install_beacon_sync._same_windows_task_xml(non_default, expected)

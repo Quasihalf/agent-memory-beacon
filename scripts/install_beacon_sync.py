@@ -43,18 +43,33 @@ MAX_TASK_XML_BYTES = 4 * 1024 * 1024
 _TASK_XML_UNORDERED_CONTAINERS = frozenset(
     ("Task", "RegistrationInfo", "Settings")
 )
-_TASK_XML_DEFAULT_SETTINGS = {
-    "AllowHardTerminate": "true",
-    "Enabled": "true",
-    "Hidden": "false",
-    "Priority": "7",
-    "RunOnlyIfNetworkAvailable": "false",
-    "UseUnifiedSchedulingEngine": "false",
-    "WakeToRun": "false",
-}
-_TASK_XML_DEFAULT_IDLE_SETTINGS = {
-    "RestartOnIdle": "false",
-    "StopOnIdleEnd": "true",
+_TASK_XML_DEFAULT_CHILDREN = {
+    "CalendarTrigger": {
+        "Enabled": "true",
+        "ExecutionTimeLimit": "PT72H",
+        "RandomDelay": "PT0M",
+    },
+    "IdleSettings": {
+        "RestartOnIdle": "false",
+        "StopOnIdleEnd": "true",
+    },
+    "LogonTrigger": {
+        "Delay": "PT0M",
+        "Enabled": "true",
+        "ExecutionTimeLimit": "PT72H",
+    },
+    "Repetition": {
+        "StopAtDurationEnd": "false",
+    },
+    "Settings": {
+        "AllowHardTerminate": "true",
+        "Enabled": "true",
+        "Hidden": "false",
+        "Priority": "7",
+        "RunOnlyIfNetworkAvailable": "false",
+        "UseUnifiedSchedulingEngine": "false",
+        "WakeToRun": "false",
+    },
 }
 WINDOWS_TASK_MISSING_MARKERS = (
     "cannot find the file specified",
@@ -1084,14 +1099,18 @@ def _normalized_task_xml_root(value):
 
 
 def _remove_windows_task_xml_defaults(root):
+    for parent in list(root.iter()):
+        name = parent.tag.rsplit("}", 1)[-1]
+        defaults = _TASK_XML_DEFAULT_CHILDREN.get(name)
+        if defaults:
+            _remove_default_task_xml_children(parent, defaults)
+
     settings = root.find(_tag("Settings"))
     if settings is None:
         return
-    _remove_default_task_xml_children(settings, _TASK_XML_DEFAULT_SETTINGS)
     idle = settings.find(_tag("IdleSettings"))
     if idle is None:
         return
-    _remove_default_task_xml_children(idle, _TASK_XML_DEFAULT_IDLE_SETTINGS)
     if not idle.attrib and not list(idle) and not str(idle.text or "").strip():
         settings.remove(idle)
 
