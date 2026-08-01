@@ -112,11 +112,11 @@ def build_windows_task_xml(
     ET.register_namespace("", TASK_NAMESPACE)
     task = ET.Element(_tag("Task"), {"version": "1.4"})
     registration = ET.SubElement(task, _tag("RegistrationInfo"))
-    ET.SubElement(registration, _tag("URI")).text = _windows_task_uri(task_name)
     ET.SubElement(
         registration,
         _tag("Description"),
     ).text = WINDOWS_TASK_OWNER_DESCRIPTION
+    ET.SubElement(registration, _tag("URI")).text = _windows_task_uri(task_name)
     triggers = ET.SubElement(task, _tag("Triggers"))
     logon = ET.SubElement(triggers, _tag("LogonTrigger"))
     ET.SubElement(logon, _tag("Enabled")).text = "true"

@@ -611,6 +611,11 @@ class InstallBeaconSyncTests(unittest.TestCase):
             ),
             install_beacon_sync.WINDOWS_TASK_OWNER_DESCRIPTION,
         )
+        registration = root.find("t:RegistrationInfo", TASK_NS)
+        self.assertEqual(
+            [element.tag.rsplit("}", 1)[-1] for element in registration],
+            ["Description", "URI"],
+        )
         command = root.findtext("t:Actions/t:Exec/t:Command", namespaces=TASK_NS)
         arguments = root.findtext("t:Actions/t:Exec/t:Arguments", namespaces=TASK_NS)
         self.assertEqual(command, self.python)
