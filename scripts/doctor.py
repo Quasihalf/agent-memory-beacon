@@ -1321,10 +1321,10 @@ def _scheduler_platform():
     return "windows" if os.name == "nt" else "macos"
 
 
-def _windows_task_user():
-    from install_beacon_sync import _current_windows_user
+def _windows_task_identity():
+    from install_beacon_sync import _current_windows_task_identity
 
-    return _current_windows_user()
+    return _current_windows_task_identity()
 
 
 def _windows_task_check(cfg, repo_root, runtime_root, runner):
@@ -1364,6 +1364,7 @@ def _windows_task_check(cfg, repo_root, runtime_root, runner):
             match = re.fullmatch(r"PT([1-9][0-9]*)M", interval_text)
             if match is None:
                 raise ValueError("periodic trigger interval is invalid")
+            identity = _windows_task_identity()
             expected = build_windows_task_xml(
                 python_path=_expanded(cfg.get("python_path") or sys.executable),
                 script_path=os.path.join(
@@ -1376,7 +1377,8 @@ def _windows_task_check(cfg, repo_root, runtime_root, runner):
                     "scripts",
                     "config.yaml",
                 ),
-                user_id=_windows_task_user(),
+                user_id=identity["account_name"],
+                principal_user_id=identity["sid"],
                 interval_minutes=int(match.group(1)),
             )
             if _normalized_task_xml(query.stdout) != _normalized_task_xml(expected):

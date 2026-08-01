@@ -133,6 +133,7 @@ def build_windows_task_xml(
     script_path,
     config_path,
     user_id,
+    principal_user_id=None,
     interval_minutes=1,
     task_name=WINDOWS_TASK_NAME,
 ):
@@ -140,6 +141,11 @@ def build_windows_task_xml(
     user_id = str(user_id or "").strip()
     if not user_id:
         raise ValueError("Windows task user_id is required")
+    if principal_user_id is None:
+        principal_user_id = user_id
+    principal_user_id = str(principal_user_id or "").strip()
+    if not principal_user_id:
+        raise ValueError("Windows task principal_user_id is required")
     ET.register_namespace("", TASK_NAMESPACE)
     task = ET.Element(_tag("Task"), {"version": "1.4"})
     registration = ET.SubElement(task, _tag("RegistrationInfo"))
@@ -164,7 +170,7 @@ def build_windows_task_xml(
 
     principals = ET.SubElement(task, _tag("Principals"))
     principal = ET.SubElement(principals, _tag("Principal"), {"id": "Author"})
-    ET.SubElement(principal, _tag("UserId")).text = user_id
+    ET.SubElement(principal, _tag("UserId")).text = principal_user_id
     ET.SubElement(principal, _tag("LogonType")).text = "InteractiveToken"
 
     settings = ET.SubElement(task, _tag("Settings"))
@@ -429,6 +435,7 @@ def install_windows_scheduler(
     script_path,
     config_path,
     user_id,
+    principal_user_id=None,
     interval_minutes=1,
     task_name=WINDOWS_TASK_NAME,
     dry_run=False,
@@ -441,6 +448,7 @@ def install_windows_scheduler(
         script_path=script_path,
         config_path=config_path,
         user_id=user_id,
+        principal_user_id=principal_user_id,
         interval_minutes=interval_minutes,
         task_name=task_name,
         dry_run=True,
@@ -464,6 +472,7 @@ def install_windows_scheduler(
             script_path=script_path,
             config_path=config_path,
             user_id=user_id,
+            principal_user_id=principal_user_id,
             interval_minutes=interval_minutes,
             task_name=task_name,
         )
@@ -474,6 +483,7 @@ def install_windows_scheduler(
             script_path=script_path,
             config_path=config_path,
             user_id=user_id,
+            principal_user_id=principal_user_id,
             interval_minutes=interval_minutes,
             task_name=task_name,
             dry_run=False,
@@ -503,6 +513,7 @@ def _install_windows_scheduler_from_state(
     script_path,
     config_path,
     user_id,
+    principal_user_id,
     interval_minutes,
     task_name,
     dry_run,
@@ -531,6 +542,7 @@ def _install_windows_scheduler_from_state(
         script_path=script_path,
         config_path=config_path,
         user_id=user_id,
+        principal_user_id=principal_user_id,
         interval_minutes=interval_minutes,
         task_name=task_name,
     )
@@ -569,6 +581,7 @@ def install_windows_components(
     script_path,
     config_path,
     user_id,
+    principal_user_id=None,
     hook_paths=(),
     interval_minutes=1,
     task_name=WINDOWS_TASK_NAME,
@@ -586,6 +599,7 @@ def install_windows_components(
         script_path=script_path,
         config_path=config_path,
         user_id=user_id,
+        principal_user_id=principal_user_id,
         interval_minutes=interval_minutes,
         task_name=task_name,
         dry_run=True,
@@ -619,6 +633,7 @@ def install_windows_components(
             script_path=script_path,
             config_path=config_path,
             user_id=user_id,
+            principal_user_id=principal_user_id,
             interval_minutes=interval_minutes,
             task_name=task_name,
         )
@@ -630,6 +645,7 @@ def install_windows_components(
             script_path=script_path,
             config_path=config_path,
             user_id=user_id,
+            principal_user_id=principal_user_id,
             interval_minutes=interval_minutes,
             task_name=task_name,
             dry_run=False,
@@ -1303,7 +1319,7 @@ def _positive_int(value, name):
     return value
 
 
-def _current_windows_user():
+def _current_windows_task_identity():
     if os.name != "nt":
         raise InstallerError(
             "Windows process token account resolution requires Windows"
@@ -1344,6 +1360,15 @@ def _current_windows_user():
         ctypes.POINTER(wintypes.DWORD),
     )
     lookup_account_sid.restype = wintypes.BOOL
+    convert_sid = advapi32.ConvertSidToStringSidW
+    convert_sid.argtypes = (
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.LPWSTR),
+    )
+    convert_sid.restype = wintypes.BOOL
+    local_free = kernel32.LocalFree
+    local_free.argtypes = (wintypes.HLOCAL,)
+    local_free.restype = wintypes.HLOCAL
     close_handle = kernel32.CloseHandle
     close_handle.argtypes = (wintypes.HANDLE,)
     close_handle.restype = wintypes.BOOL
@@ -1388,6 +1413,17 @@ def _current_windows_user():
         )[0]
         if not sid_pointer:
             raise InstallerError("Windows process token returned an invalid SID")
+        string_sid = wintypes.LPWSTR()
+        if not convert_sid(sid_pointer, ctypes.byref(string_sid)):
+            error = ctypes.get_last_error()
+            raise InstallerError(
+                "Windows process token SID conversion failed: "
+                f"{ctypes.WinError(error)}"
+            )
+        try:
+            sid = str(string_sid.value or "").strip()
+        finally:
+            local_free(ctypes.cast(string_sid, wintypes.HLOCAL))
         name_size = wintypes.DWORD()
         domain_size = wintypes.DWORD()
         sid_use = wintypes.DWORD()
@@ -1441,11 +1477,15 @@ def _current_windows_user():
         raise InstallerError(
             f"Windows process token close failed: {ctypes.WinError(error)}"
         )
-    if not account or not user_id:
+    if not account or not user_id or not sid.startswith("S-"):
         raise InstallerError(
-            "Windows process token returned an invalid account name"
+            "Windows process token returned an invalid task identity"
         )
-    return user_id
+    return {"account_name": user_id, "sid": sid}
+
+
+def _current_windows_user():
+    return _current_windows_task_identity()["account_name"]
 
 
 def _default_windows_runtime_root():
@@ -1651,12 +1691,14 @@ def main(argv=None):
         config_path = (
             runtime["config_path"] if runtime is not None else args.config
         )
+        identity = _current_windows_task_identity()
         results.extend(
             install_windows_components(
                 python_path=python_path,
                 script_path=sync_script_path,
                 config_path=config_path,
-                user_id=_current_windows_user(),
+                user_id=identity["account_name"],
+                principal_user_id=identity["sid"],
                 hook_paths=hook_paths,
                 interval_minutes=args.interval or 1,
                 dry_run=args.dry_run,

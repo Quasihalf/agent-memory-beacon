@@ -1898,6 +1898,7 @@ class BeaconSyncDoctorTests(unittest.TestCase):
                 script_path=runtime_scripts / "beacon_sync.py",
                 config_path=runtime_scripts / "config.yaml",
                 user_id="WORKSTATION\\demo",
+                principal_user_id="S-1-5-21-100-200-300-1001",
                 interval_minutes=5,
             )
             runner = WindowsTaskRecordingRunner(task_xml)
@@ -1907,8 +1908,11 @@ class BeaconSyncDoctorTests(unittest.TestCase):
                 return_value="windows",
                 create=True,
             ), patch(
-                "doctor._windows_task_user",
-                return_value="WORKSTATION\\demo",
+                "doctor._windows_task_identity",
+                return_value={
+                    "account_name": "WORKSTATION\\demo",
+                    "sid": "S-1-5-21-100-200-300-1001",
+                },
                 create=True,
             ):
                 checks = _live_checks(REPO_ROOT, cfg, runner)
@@ -1940,8 +1944,11 @@ class BeaconSyncDoctorTests(unittest.TestCase):
 
             for last_result in ("0", "267011", "0x41303"):
                 with self.subTest(last_result=last_result), patch(
-                    "doctor._windows_task_user",
-                    return_value="S-1-5-21-100-200-300-1001",
+                    "doctor._windows_task_identity",
+                    return_value={
+                        "account_name": "S-1-5-21-100-200-300-1001",
+                        "sid": "S-1-5-21-100-200-300-1001",
+                    },
                 ):
                     check = doctor._windows_task_check(
                         cfg,
@@ -1965,8 +1972,11 @@ class BeaconSyncDoctorTests(unittest.TestCase):
                 user_id="S-1-5-21-100-200-300-1001",
             )
             with patch(
-                "doctor._windows_task_user",
-                return_value="S-1-5-21-100-200-300-1001",
+                "doctor._windows_task_identity",
+                return_value={
+                    "account_name": "S-1-5-21-100-200-300-1001",
+                    "sid": "S-1-5-21-100-200-300-1001",
+                },
             ):
                 check = doctor._windows_task_check(
                     cfg,
@@ -2000,8 +2010,11 @@ class BeaconSyncDoctorTests(unittest.TestCase):
                 return_value="windows",
                 create=True,
             ), patch(
-                "doctor._windows_task_user",
-                return_value="WORKSTATION\\demo",
+                "doctor._windows_task_identity",
+                return_value={
+                    "account_name": "WORKSTATION\\demo",
+                    "sid": "WORKSTATION\\demo",
+                },
                 create=True,
             ):
                 checks = _live_checks(REPO_ROOT, cfg, runner)

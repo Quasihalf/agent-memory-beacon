@@ -177,8 +177,11 @@ class InstallBeaconSyncTests(unittest.TestCase):
             ) as prepare,
             mock.patch.object(
                 install_beacon_sync,
-                "_current_windows_user",
-                return_value="S-1-5-21-100-200-300-1001",
+                "_current_windows_task_identity",
+                return_value={
+                    "account_name": r"DESKTOP\demo",
+                    "sid": "S-1-5-21-100-200-300-1001",
+                },
             ),
             mock.patch.object(
                 install_beacon_sync,
@@ -201,6 +204,11 @@ class InstallBeaconSyncTests(unittest.TestCase):
         self.assertEqual(kwargs["python_path"], binding["python_path"])
         self.assertEqual(kwargs["script_path"], binding["script_path"])
         self.assertEqual(kwargs["config_path"], binding["config_path"])
+        self.assertEqual(kwargs["user_id"], r"DESKTOP\demo")
+        self.assertEqual(
+            kwargs["principal_user_id"],
+            "S-1-5-21-100-200-300-1001",
+        )
         self.assertNotEqual(kwargs["python_path"], sys.executable)
 
     def test_windows_main_does_not_change_task_or_hooks_when_runtime_fails(self):
@@ -689,6 +697,53 @@ class InstallBeaconSyncTests(unittest.TestCase):
         create = next(arguments for arguments in calls if "/Create" in arguments)
         self.assertEqual(create[create.index("/TN") + 1], task_name)
 
+    def test_windows_task_uses_account_for_trigger_and_sid_for_principal(self):
+        xml = install_beacon_sync.build_windows_task_xml(
+            python_path=self.python,
+            script_path=self.script,
+            config_path=self.config,
+            user_id=r"DESKTOP\demo",
+            principal_user_id="S-1-5-21-100-200-300-1001",
+        )
+        root = ET.fromstring(xml)
+
+        self.assertEqual(
+            root.findtext(
+                "t:Triggers/t:LogonTrigger/t:UserId",
+                namespaces=TASK_NS,
+            ),
+            r"DESKTOP\demo",
+        )
+        self.assertEqual(
+            root.findtext(
+                "t:Principals/t:Principal/t:UserId",
+                namespaces=TASK_NS,
+            ),
+            "S-1-5-21-100-200-300-1001",
+        )
+
+    def test_windows_scheduler_propagates_principal_sid(self):
+        runner, state, _calls, _payloads = self._windows_task_runner(None)
+
+        result = install_beacon_sync.install_windows_scheduler(
+            python_path=self.python,
+            script_path=self.script,
+            config_path=self.config,
+            user_id=r"DESKTOP\demo",
+            principal_user_id="S-1-5-21-100-200-300-1001",
+            command_runner=runner,
+        )
+
+        self.assertTrue(result["changed"])
+        root = ET.fromstring(state["xml"])
+        self.assertEqual(
+            root.findtext(
+                "t:Principals/t:Principal/t:UserId",
+                namespaces=TASK_NS,
+            ),
+            "S-1-5-21-100-200-300-1001",
+        )
+
     def test_windows_task_comparison_ignores_schema_all_element_order(self):
         xml = install_beacon_sync.build_windows_task_xml(
             python_path=self.python,
@@ -931,15 +986,16 @@ class InstallBeaconSyncTests(unittest.TestCase):
             domain.value = "RUNNERVM"
             return True
 
-        def legacy_convert_must_not_run(_sid, _string_sid):
+        def convert(_sid, string_sid):
             self.assertEqual(_sid, 5678)
-            raise AssertionError("ConvertSidToStringSidW must not be used")
+            string_sid.value = "S-1-5-21-100-200-300-1001"
+            return True
 
         get_current_process = Function(lambda: -1)
         open_token = Function(open_process_token)
         get_token = Function(get_token_information)
         lookup_function = Function(lookup)
-        convert_function = Function(legacy_convert_must_not_run)
+        convert_function = Function(convert)
         close_handle = Function(lambda _handle: True)
         local_free = Function(lambda _pointer: 0)
         advapi32 = SimpleNamespace(
@@ -1003,8 +1059,8 @@ class InstallBeaconSyncTests(unittest.TestCase):
         self.assertEqual(get_token.calls[0][2:4], (None, 0))
         self.assertEqual(len(close_handle.calls), 1)
         self.assertEqual(len(lookup_function.calls), 2)
-        self.assertEqual(len(convert_function.calls), 0)
-        self.assertEqual(len(local_free.calls), 0)
+        self.assertEqual(len(convert_function.calls), 1)
+        self.assertEqual(len(local_free.calls), 1)
         self.assertEqual(close_handle.argtypes, (wintypes.HANDLE,))
         self.assertIs(close_handle.restype, wintypes.BOOL)
 

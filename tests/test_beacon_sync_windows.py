@@ -161,7 +161,9 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
                 "Agent Memory Beacon CI "
                 f"{os.getpid()}-{secrets.token_hex(6)}"
             )
-            user_id = install_beacon_sync._current_windows_user()
+            identity = install_beacon_sync._current_windows_task_identity()
+            user_id = identity["account_name"]
+            principal_user_id = identity["sid"]
             deleted = False
             try:
                 install_beacon_sync.install_windows_scheduler(
@@ -169,6 +171,7 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
                     script_path=old_script,
                     config_path=config,
                     user_id=user_id,
+                    principal_user_id=principal_user_id,
                     task_name=task_name,
                 )
                 old_xml = install_beacon_sync._query_windows_task(None, task_name)
@@ -177,6 +180,7 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
                     script_path=old_script,
                     config_path=config,
                     user_id=user_id,
+                    principal_user_id=principal_user_id,
                     task_name=task_name,
                 )
                 self.assertTrue(
@@ -188,6 +192,7 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
                     script_path=new_script,
                     config_path=config,
                     user_id=user_id,
+                    principal_user_id=principal_user_id,
                     task_name=task_name,
                 )
                 expected_new = install_beacon_sync.build_windows_task_xml(
@@ -195,6 +200,7 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
                     script_path=new_script,
                     config_path=config,
                     user_id=user_id,
+                    principal_user_id=principal_user_id,
                     task_name=task_name,
                 )
                 self.assertTrue(
@@ -235,6 +241,7 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
                     script_path=old_script,
                     config_path=config,
                     user_id=user_id,
+                    principal_user_id=principal_user_id,
                     task_name=task_name,
                     uninstall=True,
                 )
@@ -255,11 +262,13 @@ class WindowsTaskIntegrationTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "Windows-only synchronization smoke tests")
 class BeaconSyncWindowsTests(unittest.TestCase):
-    def test_current_task_user_is_resolved_to_account_name(self):
+    def test_current_task_identity_has_account_name_and_sid(self):
+        identity = install_beacon_sync._current_windows_task_identity()
         self.assertRegex(
-            install_beacon_sync._current_windows_user(),
+            identity["account_name"],
             r"^[^\\]+\\[^\\]+$",
         )
+        self.assertRegex(identity["sid"], r"^S-[0-9]+(?:-[0-9]+)+$")
 
     def test_current_task_user_ignores_account_environment(self):
         expected = install_beacon_sync._current_windows_user()
