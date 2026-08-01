@@ -1593,6 +1593,121 @@ class BeaconSyncDoctorTests(unittest.TestCase):
                 any("unittest" in call["args"] for call in runner.calls)
             )
 
+    def test_quick_cli_loads_sync_only_producer_config(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            producer = {
+                "enabled": True,
+                "role": "producer-replica",
+                "device_id": "windows-quick-doctor",
+                "state_dir": str(root / "producer-state"),
+                "outbox_dir": str(root / "outbox"),
+                "received_published_dir": str(root / "received"),
+                "replica_path": str(root / "replica"),
+                "gc_retention_seconds": 604800,
+            }
+            initialize_producer(producer)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                json.dumps({"beacon_sync": producer}),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                code = main(
+                    [
+                        "--profile",
+                        "quick",
+                        "--config",
+                        str(config_path),
+                        "--repo-root",
+                        REPO_ROOT,
+                        "--json",
+                    ],
+                    runner=RecordingRunner(),
+                )
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 0, payload)
+            self.assertEqual(payload["status"], "pass")
+            self.assertEqual(
+                tuple(check["name"] for check in payload["checks"]),
+                (
+                    "configuration",
+                    "beacon-sync",
+                    "script-compilation",
+                    "module-imports",
+                ),
+            )
+
+    def test_live_cli_preserves_sync_runtime_release_bindings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = make_windows_producer_live_fixture(Path(temp))
+            config_path = Path(cfg["runtime_root"], "scripts", "config.yaml")
+            output = io.StringIO()
+
+            with (
+                patch.object(doctor, "_scheduler_platform", return_value="windows"),
+                patch.object(
+                    doctor,
+                    "_windows_task_check",
+                    return_value=DoctorCheck("windows-task", True, True, "ok"),
+                ),
+                contextlib.redirect_stdout(output),
+            ):
+                code = main(
+                    [
+                        "--profile",
+                        "live",
+                        "--config",
+                        str(config_path),
+                        "--repo-root",
+                        REPO_ROOT,
+                        "--json",
+                    ],
+                    runner=RecordingRunner(),
+                )
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 0, payload)
+            self.assertEqual(payload["status"], "pass")
+            self.assertEqual(
+                next(
+                    check["passed"]
+                    for check in payload["checks"]
+                    if check["name"] == "runtime-release"
+                ),
+                True,
+            )
+
+    def test_quick_cli_does_not_treat_other_missing_vault_config_as_sync_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config_path = Path(temp) / "config.yaml"
+            config_path.write_text("{}\n", encoding="utf-8")
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                code = main(
+                    [
+                        "--profile",
+                        "quick",
+                        "--config",
+                        str(config_path),
+                        "--repo-root",
+                        REPO_ROOT,
+                        "--json",
+                    ],
+                    runner=RecordingRunner(),
+                )
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 1)
+            self.assertEqual(payload["status"], "fail")
+            self.assertEqual(len(payload["checks"]), 1)
+            self.assertEqual(payload["checks"][0]["name"], "configuration")
+            self.assertIn("vault_path", payload["checks"][0]["details"])
+
     def test_json_cli_output_is_machine_readable_and_exit_tracks_status(self):
         report = DoctorReport(
             profile="quick",

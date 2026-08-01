@@ -1728,6 +1728,8 @@ def stage_runtime(plan, command_runner=None):
                 str(stage / "scripts" / "doctor.py"),
                 "--profile",
                 "quick",
+                "--config",
+                str(stage / "scripts" / "config.yaml"),
                 "--repo-root",
                 str(stage),
                 "--json",

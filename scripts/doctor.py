@@ -1922,20 +1922,43 @@ def render_report(report, json_output=False):
     return "\n".join(lines)
 
 
+def _load_profile_config(path=None):
+    from config import CONFIG_PATH, load_beacon_sync_config, load_config
+
+    config_path = os.fspath(path or CONFIG_PATH)
+    with open(config_path, "r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    sync = raw.get("beacon_sync") if isinstance(raw, dict) else None
+    if (
+        isinstance(raw, dict)
+        and "vault_path" not in raw
+        and isinstance(sync, dict)
+        and sync.get("enabled") is True
+        and sync.get("role") == "producer-replica"
+    ):
+        cfg = {"beacon_sync": load_beacon_sync_config(config_path)}
+        for key in ("python_path", "runtime_root"):
+            if key in raw:
+                cfg[key] = raw[key]
+        return cfg
+    return load_config(config_path)
+
+
 def main(argv=None, *, config_loader=None, runner=None):
     parser = argparse.ArgumentParser(description="Agent Memory Beacon health checks")
     parser.add_argument("--profile", choices=PROFILE_NAMES, default="quick")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parent.parent))
+    parser.add_argument("--config")
     args = parser.parse_args(argv)
-    if config_loader is None:
-        from config import load_config
-
-        config_loader = load_config
     try:
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured):
-            cfg = config_loader()
+            cfg = (
+                _load_profile_config(args.config)
+                if config_loader is None
+                else config_loader()
+            )
         report = run_profile(
             args.profile,
             repo_root=args.repo_root,

@@ -867,7 +867,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             )
             runner = WindowsRuntimeRunner(base_python)
 
-            stage_runtime(plan, command_runner=runner)
+            staged = stage_runtime(plan, command_runner=runner)
 
             for command, kwargs in runner.calls:
                 if not command or not str(command[0]).lower().endswith(
@@ -893,6 +893,17 @@ class RuntimeInstallerTests(unittest.TestCase):
                     self.assertIn("-B", command[1:], command)
                     self.assertIn("-X", command[1:], command)
                     self.assertIn("utf8", command[1:], command)
+            quick_doctor = next(
+                command
+                for command, _kwargs in runner.calls
+                if any(str(item).endswith("doctor.py") for item in command)
+                and command[command.index("--profile") + 1] == "quick"
+            )
+            self.assertIn("--config", quick_doctor)
+            self.assertEqual(
+                quick_doctor[quick_doctor.index("--config") + 1],
+                str(staged.root / "scripts" / "config.yaml"),
+            )
 
     def test_remove_tree_refuses_replaced_regular_parent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2153,6 +2164,17 @@ class RuntimeInstallerTests(unittest.TestCase):
             self.assertTrue(pip_command[-1].endswith("requirements.lock"))
             self.assertTrue(
                 any("doctor.py" in call and "--profile quick" in call for call in commands)
+            )
+            quick_doctor = next(
+                command
+                for command, _kwargs in runner.calls
+                if any(str(item).endswith("doctor.py") for item in command)
+                and command[command.index("--profile") + 1] == "quick"
+            )
+            self.assertIn("--config", quick_doctor)
+            self.assertEqual(
+                quick_doctor[quick_doctor.index("--config") + 1],
+                str(staged.root / "scripts" / "config.yaml"),
             )
             self.assertTrue(all(not kwargs.get("shell") for _call, kwargs in runner.calls))
 
