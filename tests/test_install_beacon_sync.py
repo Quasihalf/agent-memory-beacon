@@ -742,6 +742,32 @@ class InstallBeaconSyncTests(unittest.TestCase):
             difference,
         )
 
+    def test_windows_task_difference_lists_names_before_shifted_child_pair(self):
+        namespace = install_beacon_sync.TASK_NAMESPACE
+        expected = ET.fromstring(
+            f'<Settings xmlns="{namespace}">'
+            "<AllowHardTerminate>true</AllowHardTerminate>"
+            "<Enabled>true</Enabled>"
+            "</Settings>"
+        )
+        actual = ET.fromstring(
+            f'<Settings xmlns="{namespace}">'
+            "<Enabled>true</Enabled>"
+            "</Settings>"
+        )
+
+        difference = install_beacon_sync._windows_task_element_difference(
+            actual,
+            expected,
+            "/Settings",
+        )
+
+        self.assertEqual(
+            difference,
+            "/Settings: expected child elements "
+            "['AllowHardTerminate', 'Enabled'], got ['Enabled']",
+        )
+
     def test_current_windows_user_reads_process_token_and_releases_resources(self):
         class Box:
             def __init__(self, value=0):
