@@ -913,7 +913,7 @@ def _create_windows_task(command_runner, task_name, xml, *, replace):
             suffix=".xml",
             delete=False,
         ) as handle:
-            handle.write(_task_xml_utf8_bytes(xml))
+            handle.write(_task_xml_scheduler_bytes(xml))
             temporary_path = handle.name
         arguments = [
             "schtasks.exe",
@@ -1058,22 +1058,32 @@ def _owned_windows_task_xml(value):
     )
 
 
-def _task_xml_utf8_bytes(value):
-    if isinstance(value, bytes):
-        data = value
+def _task_xml_input(value):
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        data = bytes(value)
+        size = len(data)
     else:
-        data = str(value or "").encode("utf-8")
-    if not data or len(data) > MAX_TASK_XML_BYTES:
+        data = str(value or "")
+        size = len(data.encode("utf-8"))
+    if not data or size > MAX_TASK_XML_BYTES:
         raise InstallerError("existing Windows task XML is missing or oversized")
     return data
 
 
 def _task_xml_root(value):
-    data = _task_xml_utf8_bytes(value)
+    data = _task_xml_input(value)
     try:
         return ET.fromstring(data)
     except ET.ParseError as exc:
         raise InstallerError("existing Windows task XML is invalid") from exc
+
+
+def _task_xml_scheduler_bytes(value):
+    return ET.tostring(
+        _task_xml_root(value),
+        encoding="utf-16",
+        xml_declaration=True,
+    )
 
 
 def _require_regular(path, name):

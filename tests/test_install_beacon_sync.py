@@ -1,3 +1,4 @@
+import codecs
 import json
 import os
 import pathlib
@@ -21,6 +22,10 @@ import install_beacon_sync
 
 TASK_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
 HOST_PATH_CLASS = pathlib.WindowsPath if os.name == "nt" else pathlib.PosixPath
+
+
+def _decode_windows_task_payload(payload):
+    return bytes(payload).decode("utf-16")
 
 
 class InstallBeaconSyncTests(unittest.TestCase):
@@ -52,7 +57,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
                 xml_path = Path(arguments[arguments.index("/XML") + 1])
                 payload = xml_path.read_bytes()
                 created_payloads.append(payload)
-                state["xml"] = payload.decode("utf-8")
+                state["xml"] = _decode_windows_task_payload(payload)
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if "/Delete" in arguments:
                 state["xml"] = None
@@ -1198,7 +1203,39 @@ class InstallBeaconSyncTests(unittest.TestCase):
                 ["print", "bootout", "print"],
             )
 
-    def test_windows_scheduler_writes_utf8_xml_and_skips_identical_task(self):
+    def test_windows_task_file_uses_utf16_bom_and_matching_declaration(self):
+        xml = install_beacon_sync.build_windows_task_xml(
+            python_path=r"C:\记忆信标\python.exe",
+            script_path=r"C:\记忆信标\beacon_sync.py",
+            config_path=r"C:\用户\配置.yaml",
+            user_id=r"DESKTOP\demo",
+        )
+        payloads = []
+
+        def runner(arguments):
+            xml_path = Path(arguments[arguments.index("/XML") + 1])
+            payloads.append(xml_path.read_bytes())
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        install_beacon_sync._create_windows_task(
+            runner,
+            "Agent Memory Beacon Encoding Test",
+            xml,
+            replace=False,
+        )
+
+        self.assertEqual(len(payloads), 1)
+        payload = payloads[0]
+        self.assertTrue(
+            payload.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE))
+        )
+        decoded = payload.decode("utf-16")
+        self.assertIn("encoding='utf-16'", decoded)
+        self.assertIn("记忆信标", decoded)
+        self.assertTrue(install_beacon_sync._same_windows_task_xml(payload, xml))
+        self.assertTrue(install_beacon_sync._same_windows_task_xml(decoded, xml))
+
+    def test_windows_scheduler_skips_identical_task(self):
         desired = install_beacon_sync.build_windows_task_xml(
             python_path=self.python,
             script_path=self.script,
@@ -1252,7 +1289,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
                 )
             xml_path = Path(arguments[arguments.index("/XML") + 1])
             created_payloads.append(xml_path.read_bytes())
-            installed_xml = created_payloads[-1].decode("utf-8")
+            installed_xml = _decode_windows_task_payload(created_payloads[-1])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         installed = install_beacon_sync.install_windows_scheduler(
@@ -1265,8 +1302,12 @@ class InstallBeaconSyncTests(unittest.TestCase):
 
         self.assertTrue(installed["changed"])
         self.assertEqual(len(created_payloads), 1)
-        self.assertTrue(created_payloads[0].startswith(b"<?xml"))
-        created_payloads[0].decode("utf-8")
+        self.assertTrue(
+            created_payloads[0].startswith(
+                (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+            )
+        )
+        _decode_windows_task_payload(created_payloads[0])
 
     def test_windows_scheduler_missing_task_create_never_forces_overwrite(self):
         calls = []
@@ -1288,7 +1329,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
                     stderr="错误: 系统找不到指定的文件。",
                 )
             xml_path = Path(arguments[arguments.index("/XML") + 1])
-            installed_xml = xml_path.read_text(encoding="utf-8")
+            installed_xml = _decode_windows_task_payload(xml_path.read_bytes())
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         result = install_beacon_sync.install_windows_scheduler(
@@ -1376,7 +1417,9 @@ class InstallBeaconSyncTests(unittest.TestCase):
                     state["xml"] = None
                 else:
                     xml_path = Path(arguments[arguments.index("/XML") + 1])
-                    state["xml"] = xml_path.read_text(encoding="utf-8")
+                    state["xml"] = _decode_windows_task_payload(
+                        xml_path.read_bytes()
+                    )
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             raise AssertionError(arguments)
 
@@ -1486,7 +1529,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
                     stderr="",
                 )
             xml_path = Path(arguments[arguments.index("/XML") + 1])
-            installed_xml = xml_path.read_text(encoding="utf-8")
+            installed_xml = _decode_windows_task_payload(xml_path.read_bytes())
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         result = install_beacon_sync.install_windows_scheduler(
@@ -1914,8 +1957,16 @@ class InstallBeaconSyncTests(unittest.TestCase):
                     )
 
             self.assertGreaterEqual(len(payloads), 2)
-            self.assertEqual(payloads[-1], previous_xml.encode("utf-8"))
-            self.assertEqual(state["xml"], previous_xml)
+            self.assertTrue(
+                install_beacon_sync._same_windows_task_xml(
+                    payloads[-1], previous_xml
+                )
+            )
+            self.assertTrue(
+                install_beacon_sync._same_windows_task_xml(
+                    state["xml"], previous_xml
+                )
+            )
             self.assertFalse(codex.exists())
             self.assertEqual(claude.read_bytes(), original_claude)
 
@@ -2002,8 +2053,16 @@ class InstallBeaconSyncTests(unittest.TestCase):
                     )
 
             self.assertTrue(any("/Delete" in arguments for arguments in calls))
-            self.assertEqual(payloads[-1], previous_xml.encode("utf-8"))
-            self.assertEqual(state["xml"], previous_xml)
+            self.assertTrue(
+                install_beacon_sync._same_windows_task_xml(
+                    payloads[-1], previous_xml
+                )
+            )
+            self.assertTrue(
+                install_beacon_sync._same_windows_task_xml(
+                    state["xml"], previous_xml
+                )
+            )
             self.assertEqual(codex.read_bytes(), original_codex)
             self.assertEqual(claude.read_bytes(), original_claude)
 
