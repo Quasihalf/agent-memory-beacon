@@ -1420,7 +1420,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             install_beacon_sync.InstallerError,
-            "verification",
+            r"verification failed.*Interval",
         ):
             install_beacon_sync.install_windows_scheduler(
                 python_path=self.python,

@@ -460,8 +460,8 @@ def install_windows_scheduler(
             )
         except Exception as rollback_error:
             raise InstallerError(
-                "Windows scheduler installation failed and rollback failed: "
-                f"{rollback_error}"
+                f"Windows scheduler installation failed: {install_error}; "
+                f"rollback failed: {rollback_error}"
             ) from install_error
         raise
 
@@ -910,8 +910,10 @@ def _verify_windows_task_state(
 ):
     actual_xml = _query_windows_task(command_runner, task_name)
     if not _same_windows_task_xml(actual_xml, expected_xml):
+        difference = _windows_task_xml_difference(actual_xml, expected_xml)
         raise InstallerError(
-            f"Windows task {operation} verification failed: {task_name}"
+            f"Windows task {operation} verification failed: {task_name}; "
+            f"{difference}"
         )
 
 
@@ -1054,6 +1056,53 @@ def _normalized_task_xml(value):
             element.attrib.clear()
             element.attrib.update(attributes)
     return ET.tostring(root, encoding="utf-8")
+
+
+def _windows_task_xml_difference(actual, expected):
+    if actual is None or expected is None:
+        return f"expected task present={expected is not None}, got {actual is not None}"
+    return _windows_task_element_difference(
+        _task_xml_root(actual),
+        _task_xml_root(expected),
+        "/Task",
+    ) or "normalized XML differs"
+
+
+def _windows_task_element_difference(actual, expected, path):
+    if actual.tag != expected.tag:
+        return f"{path}: expected tag {expected.tag!r}, got {actual.tag!r}"
+    expected_attributes = tuple(sorted(expected.attrib.items()))
+    actual_attributes = tuple(sorted(actual.attrib.items()))
+    if actual_attributes != expected_attributes:
+        return (
+            f"{path}: expected attributes {expected_attributes!r}, "
+            f"got {actual_attributes!r}"
+        )
+    expected_text = str(expected.text or "").strip()
+    actual_text = str(actual.text or "").strip()
+    if actual_text != expected_text:
+        return f"{path}: expected text {expected_text!r}, got {actual_text!r}"
+
+    actual_children = list(actual)
+    expected_children = list(expected)
+    for index, (actual_child, expected_child) in enumerate(
+        zip(actual_children, expected_children),
+        start=1,
+    ):
+        child_name = expected_child.tag.rsplit("}", 1)[-1]
+        difference = _windows_task_element_difference(
+            actual_child,
+            expected_child,
+            f"{path}/{child_name}[{index}]",
+        )
+        if difference:
+            return difference
+    if len(actual_children) != len(expected_children):
+        return (
+            f"{path}: expected {len(expected_children)} child elements, "
+            f"got {len(actual_children)}"
+        )
+    return None
 
 
 def _owned_windows_task_xml(value, *, task_name=WINDOWS_TASK_NAME):
