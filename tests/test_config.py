@@ -347,7 +347,7 @@ class BeaconSyncConfigTests(unittest.TestCase):
     ):
         temporary = tempfile.TemporaryDirectory()
         root = Path(temporary.name)
-        vault = Path(vault_path) if vault_path is not None else root / "vault"
+        vault = vault_path if vault_path is not None else root / "vault"
         sessions = root / "sessions"
         if vault_path is None:
             vault.mkdir()

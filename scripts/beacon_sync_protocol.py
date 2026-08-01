@@ -849,7 +849,10 @@ def _windows_rename_buffer_size(
         or filename_offset >= structure_size
     ):
         raise ProtocolError("Windows rename buffer metadata is invalid")
-    return max(structure_size, filename_offset + filename_bytes)
+    return max(
+        structure_size + filename_bytes,
+        filename_offset + filename_bytes,
+    )
 
 
 def _assert_supported_windows_atomic_filesystem(version=None):
@@ -1039,9 +1042,30 @@ def _windows_atomic_replace(descriptor, destination, *, root, mode):
             ("FileAttributes", wintypes.DWORD),
         )
 
+    class IO_STATUS_VALUE(ctypes.Union):
+        _fields_ = (
+            ("Status", wintypes.LONG),
+            ("Pointer", wintypes.LPVOID),
+        )
+
+    class IO_STATUS_BLOCK(ctypes.Structure):
+        _anonymous_ = ("Value",)
+        _fields_ = (
+            ("Value", IO_STATUS_VALUE),
+            ("Information", ctypes.c_size_t),
+        )
+
     class FILE_RENAME_INFO_EX(ctypes.Structure):
         _fields_ = (
             ("Flags", wintypes.DWORD),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", wintypes.WCHAR * 1),
+        )
+
+    class FILE_RENAME_INFO(ctypes.Structure):
+        _fields_ = (
+            ("ReplaceIfExists", ctypes.c_ubyte),
             ("RootDirectory", wintypes.HANDLE),
             ("FileNameLength", wintypes.DWORD),
             ("FileName", wintypes.WCHAR * 1),
@@ -1061,7 +1085,8 @@ def _windows_atomic_replace(descriptor, destination, *, root, mode):
     file_attribute_readonly = 0x00000001
     file_attribute_reparse = 0x00000400
     file_basic_info = 0
-    file_rename_info_ex = 22
+    file_rename_information = 10
+    file_rename_information_ex = 65
     rename_flags = 0x00000001 | 0x00000002 | 0x00000040
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -1098,6 +1123,19 @@ def _windows_atomic_replace(descriptor, destination, *, root, mode):
         wintypes.DWORD,
     )
     set_information.restype = wintypes.BOOL
+    ntdll = ctypes.WinDLL("ntdll")
+    nt_set_information = ntdll.NtSetInformationFile
+    nt_set_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(IO_STATUS_BLOCK),
+        wintypes.LPVOID,
+        wintypes.ULONG,
+        ctypes.c_int,
+    )
+    nt_set_information.restype = wintypes.LONG
+    ntstatus_to_dos_error = ntdll.RtlNtStatusToDosError
+    ntstatus_to_dos_error.argtypes = (wintypes.LONG,)
+    ntstatus_to_dos_error.restype = wintypes.ULONG
     final_path_name = kernel32.GetFinalPathNameByHandleW
     final_path_name.argtypes = (
         wintypes.HANDLE,
@@ -1201,29 +1239,65 @@ def _windows_atomic_replace(descriptor, destination, *, root, mode):
 
         filename_bytes = Path(destination).name.encode("utf-16-le")
         filename_offset = FILE_RENAME_INFO_EX.FileName.offset
-        buffer = ctypes.create_string_buffer(
+        extended_buffer = ctypes.create_string_buffer(
             _windows_rename_buffer_size(
                 len(filename_bytes),
                 filename_offset,
                 ctypes.sizeof(FILE_RENAME_INFO_EX),
             )
         )
-        rename = FILE_RENAME_INFO_EX.from_buffer(buffer)
-        rename.Flags = rename_flags
-        rename.RootDirectory = parent_handle
-        rename.FileNameLength = len(filename_bytes)
+        extended_rename = FILE_RENAME_INFO_EX.from_buffer(extended_buffer)
+        extended_rename.Flags = rename_flags
+        extended_rename.RootDirectory = parent_handle
+        extended_rename.FileNameLength = len(filename_bytes)
         ctypes.memmove(
-            ctypes.addressof(buffer) + filename_offset,
+            ctypes.addressof(extended_buffer) + filename_offset,
             filename_bytes,
             len(filename_bytes),
         )
-        if not set_information(
-            temp_handle,
-            file_rename_info_ex,
-            buffer,
-            len(buffer),
-        ):
-            raise ProtocolError(str(ctypes.WinError(ctypes.get_last_error())))
+        io_status = IO_STATUS_BLOCK()
+        rename_status = int(
+            nt_set_information(
+                temp_handle,
+                ctypes.byref(io_status),
+                extended_buffer,
+                len(extended_buffer),
+                file_rename_information_ex,
+            )
+        )
+        if rename_status >= 0:
+            return
+
+        filename_offset = FILE_RENAME_INFO.FileName.offset
+        legacy_buffer = ctypes.create_string_buffer(
+            _windows_rename_buffer_size(
+                len(filename_bytes),
+                filename_offset,
+                ctypes.sizeof(FILE_RENAME_INFO),
+            )
+        )
+        legacy_rename = FILE_RENAME_INFO.from_buffer(legacy_buffer)
+        legacy_rename.ReplaceIfExists = 1
+        legacy_rename.RootDirectory = parent_handle
+        legacy_rename.FileNameLength = len(filename_bytes)
+        ctypes.memmove(
+            ctypes.addressof(legacy_buffer) + filename_offset,
+            filename_bytes,
+            len(filename_bytes),
+        )
+        io_status = IO_STATUS_BLOCK()
+        rename_status = int(
+            nt_set_information(
+                temp_handle,
+                ctypes.byref(io_status),
+                legacy_buffer,
+                len(legacy_buffer),
+                file_rename_information,
+            )
+        )
+        if rename_status < 0:
+            error = int(ntstatus_to_dos_error(rename_status))
+            raise ProtocolError(str(ctypes.WinError(error)))
     finally:
         close_handle(parent_handle)
 
@@ -1313,7 +1387,7 @@ def _portable_rmtree_entry(path, root, *, expected_identity):
     ):
         raise ProtocolError("managed tree directory changed during removal")
     for entry in entries:
-        info = entry.stat(follow_symlinks=False)
+        info = os.lstat(entry.path)
         if _is_link_or_reparse(info):
             raise ProtocolError("managed tree contains an unsafe link")
         if stat.S_ISREG(info.st_mode):

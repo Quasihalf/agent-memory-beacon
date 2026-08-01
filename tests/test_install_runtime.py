@@ -434,6 +434,30 @@ class RuntimeInstallerTests(unittest.TestCase):
         self.windows_runtime_probe.start()
         self.addCleanup(self.windows_runtime_probe.stop)
 
+    def test_install_runtime_import_does_not_require_posix_fcntl(self):
+        code = "\n".join(
+            (
+                "import builtins, sys",
+                "real_import = builtins.__import__",
+                "def guarded_import(name, *args, **kwargs):",
+                "    if name == 'fcntl':",
+                "        raise ImportError('fcntl is unavailable')",
+                "    return real_import(name, *args, **kwargs)",
+                "builtins.__import__ = guarded_import",
+                "sys.path.insert(0, sys.argv[1])",
+                "import install_runtime",
+            )
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", code, str(SCRIPTS_DIR)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_legacy_v1_rollback_manifest_without_sync_path_remains_valid(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as vault:
             root = Path(tmp)

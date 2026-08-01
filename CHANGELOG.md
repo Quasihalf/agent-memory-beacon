@@ -8,6 +8,8 @@ All notable changes to Agent Memory Beacon are documented here.
 
 - Allow a Codex task that originated as a sub-agent rollout and was later resumed directly by the user to persist rolling context only when its outer thread has a real `UserPromptSubmit` checkpoint; ordinary sub-agent memory remains isolated.
 - Reserve final render budget for a matched `[CONTEXT]` after higher-authority formal memory so a crowded Decision/Error result set cannot silently discard the latest conversation summary.
+- Create a fresh authority ledger on Python 3.11 without serializing an uninitialized in-memory SQLite database.
+- Complete the Windows synchronization path with native handle-relative atomic rename, path-bound recursive cleanup identities, and lazy loading of macOS-only launchd dependencies.
 
 ## [0.7.0] - 2026-07-31
 

@@ -586,11 +586,11 @@ class BeaconSyncProtocolTests(unittest.TestCase):
             beacon_sync_protocol._windows_rename_buffer_size(0, 20, 24)
         self.assertEqual(
             beacon_sync_protocol._windows_rename_buffer_size(2, 20, 24),
-            24,
+            26,
         )
         self.assertEqual(
             beacon_sync_protocol._windows_rename_buffer_size(12, 20, 24),
-            32,
+            36,
         )
 
     def test_windows_portable_directory_tree_avoids_posix_dir_fd_api(self):

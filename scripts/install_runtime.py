@@ -33,7 +33,6 @@ from install_beacon_sync import (
     LAUNCHD_LABEL as SYNC_LAUNCHD_LABEL,
     install_macos_scheduler,
 )
-from install_launchd import install_launch_agents
 from safety import (
     durable_atomic_write,
     durable_rmtree,
@@ -42,6 +41,12 @@ from safety import (
     exclusive_file_lock,
     safe_vault_path,
 )
+
+
+def install_launch_agents(*args, **kwargs):
+    from install_launchd import install_launch_agents as implementation
+
+    return implementation(*args, **kwargs)
 
 
 DEFAULT_INSTALL_ROOT = Path("~/.local/share/agent-memory-beacon/runtime").expanduser()

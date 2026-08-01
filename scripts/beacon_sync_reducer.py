@@ -848,7 +848,9 @@ def _open_ledger(state_dir):
         connection.row_factory = sqlite3.Row
         if recovered_image is not None:
             connection.deserialize(recovered_image)
-        image_digest = sha256_bytes(connection.serialize())
+            image_digest = sha256_bytes(connection.serialize())
+        else:
+            image_digest = sha256_bytes(b"")
         connection.configure_persistence(
             path,
             state_dir,

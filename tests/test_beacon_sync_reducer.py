@@ -1464,6 +1464,36 @@ class BeaconSyncReducerTests(unittest.TestCase):
             connection.close()
         self.assertEqual(keys, {"creator-one", "creator-two"})
 
+    def test_first_ledger_creation_does_not_serialize_empty_database(self):
+        real_serialize = beacon_sync_reducer._LedgerConnection.serialize
+
+        def reject_empty_database(connection, *args, **kwargs):
+            table_count = connection.execute(
+                "select count(*) from sqlite_master where type = 'table'"
+            ).fetchone()[0]
+            if table_count == 0:
+                raise sqlite3.OperationalError("unable to serialize 'main'")
+            return real_serialize(connection, *args, **kwargs)
+
+        with patch.object(
+            beacon_sync_reducer._LedgerConnection,
+            "serialize",
+            reject_empty_database,
+        ):
+            connection = beacon_sync_reducer._open_ledger(self.authority_state)
+            try:
+                version = connection.execute(
+                    "select value from metadata where key = 'schema_version'"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+
+        self.assertEqual(
+            version,
+            str(beacon_sync_reducer.LEDGER_SCHEMA_VERSION),
+        )
+        self.assertTrue((self.authority_state / "ledger.sqlite3").is_file())
+
     def test_ledger_commit_cas_rejects_regular_path_exchange(self):
         connection = beacon_sync_reducer._open_ledger(self.authority_state)
         ledger = self.authority_state / "ledger.sqlite3"

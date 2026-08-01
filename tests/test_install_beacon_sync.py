@@ -1660,6 +1660,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
             codex.parent.mkdir(parents=True)
             claude.parent.mkdir(parents=True)
             codex.write_text('{"hooks": {}}\n', encoding="utf-8")
+            original_codex = codex.read_bytes()
             claude.write_bytes(b"{")
             runner, state, calls, _payloads = self._windows_task_runner(None)
 
@@ -1678,7 +1679,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
 
             self.assertIsNone(state["xml"])
             self.assertFalse(any("/Create" in arguments for arguments in calls))
-            self.assertEqual(codex.read_bytes(), b'{"hooks": {}}\n')
+            self.assertEqual(codex.read_bytes(), original_codex)
             self.assertEqual(claude.read_bytes(), b"{")
 
     def test_windows_transaction_hook_failure_restores_absent_task_and_hook_bytes(self):
@@ -1735,6 +1736,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
             codex.parent.mkdir(parents=True)
             codex.write_text('{"hooks": {}}\n', encoding="utf-8")
             codex.chmod(0o640)
+            original_mode = codex.stat().st_mode & 0o777
             runner, _state, _calls, _payloads = self._windows_task_runner(None)
             atomic_write = install_beacon_sync.portable_atomic_write
 
@@ -1758,7 +1760,7 @@ class InstallBeaconSyncTests(unittest.TestCase):
                         command_runner=runner,
                     )
 
-            self.assertEqual(codex.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(codex.stat().st_mode & 0o777, original_mode)
 
     def test_windows_transaction_does_not_overwrite_hook_changed_after_preflight(self):
         with tempfile.TemporaryDirectory() as temp:
