@@ -54,6 +54,10 @@ class WindowsRuntimeReleaseIntegrationTests(unittest.TestCase):
                         "enabled": True,
                         "role": "producer-replica",
                         "device_id": "windows-native-release",
+                        "state_dir": str(root / "sync-state"),
+                        "outbox_dir": str(root / "outbox"),
+                        "received_published_dir": str(root / "received"),
+                        "replica_path": str(root / "replica"),
                     },
                 },
             )

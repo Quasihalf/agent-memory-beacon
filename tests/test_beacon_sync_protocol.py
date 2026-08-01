@@ -806,7 +806,7 @@ class BeaconSyncProtocolTests(unittest.TestCase):
             self.assertTrue(outside_value.is_file())
             self.assertEqual(outside_value.read_bytes(), b"outside")
 
-    def test_windows_delete_compares_full_128_bit_file_identity(self):
+    def test_windows_delete_accepts_legacy_and_full_file_identity(self):
         class FakeFunction:
             def __init__(self, callback):
                 self.callback = callback
@@ -825,6 +825,7 @@ class BeaconSyncProtocolTests(unittest.TestCase):
         def get_information(_handle, pointer):
             information = pointer._obj
             information.dwFileAttributes = 0x80
+            information.dwVolumeSerialNumber = 3
             information.nFileSizeHigh = 0
             information.nFileSizeLow = 4
             information.nNumberOfLinks = 1
@@ -846,25 +847,31 @@ class BeaconSyncProtocolTests(unittest.TestCase):
         kernel32.GetFinalPathNameByHandleW = FakeFunction(lambda *_args: 0)
         kernel32.CloseHandle = FakeFunction(lambda *_args: True)
 
-        with (
-            patch.object(ctypes, "WinDLL", return_value=kernel32, create=True),
-            patch.object(
-                beacon_sync_protocol,
-                "_assert_supported_windows_atomic_filesystem",
-            ),
-            patch.object(
-                beacon_sync_protocol,
-                "_assert_windows_handle_under_root",
-            ),
-        ):
-            self.assertTrue(
-                beacon_sync_protocol._windows_delete_by_handle(
-                    Path("C:/replica/note.md"),
-                    root=Path("C:/replica"),
-                    expected_identity=(7, file_id, stat.S_IFREG | 0o444, 4),
-                    expect_directory=False,
+        expected_identities = (
+            (7, file_id, stat.S_IFREG | 0o444, 4),
+            (3, legacy_id, stat.S_IFREG | 0o444, 4),
+        )
+        for expected_identity in expected_identities:
+            with (
+                self.subTest(expected_identity=expected_identity[:2]),
+                patch.object(ctypes, "WinDLL", return_value=kernel32, create=True),
+                patch.object(
+                    beacon_sync_protocol,
+                    "_assert_supported_windows_atomic_filesystem",
+                ),
+                patch.object(
+                    beacon_sync_protocol,
+                    "_assert_windows_handle_under_root",
+                ),
+            ):
+                self.assertTrue(
+                    beacon_sync_protocol._windows_delete_by_handle(
+                        Path("C:/replica/note.md"),
+                        root=Path("C:/replica"),
+                        expected_identity=expected_identity,
+                        expect_directory=False,
+                    )
                 )
-            )
 
     def _event(self, seq=1):
         return build_event(

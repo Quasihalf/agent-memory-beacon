@@ -1601,7 +1601,12 @@ def _windows_delete_by_handle(
         legacy_file_index = (
             int(information.nFileIndexHigh) << 32
         ) | int(information.nFileIndexLow)
-        volume_serial = int(information.dwVolumeSerialNumber)
+        file_identities = {
+            (
+                int(information.dwVolumeSerialNumber),
+                legacy_file_index,
+            )
+        }
         identity = FILE_ID_INFO()
         if get_information_ex(
             handle,
@@ -1609,24 +1614,25 @@ def _windows_delete_by_handle(
             ctypes.byref(identity),
             ctypes.sizeof(identity),
         ):
-            file_index = int.from_bytes(
+            extended_file_index = int.from_bytes(
                 bytes(identity.FileId.Identifier),
                 "little",
             )
-            if file_index:
-                volume_serial = int(identity.VolumeSerialNumber)
-            else:
-                file_index = legacy_file_index
-        else:
-            file_index = legacy_file_index
+            if extended_file_index:
+                file_identities.add(
+                    (
+                        int(identity.VolumeSerialNumber),
+                        extended_file_index,
+                    )
+                )
         file_size = (
             int(information.nFileSizeHigh) << 32
         ) | int(information.nFileSizeLow)
         if expected_identity is not None:
-            if (
-                int(expected_identity[0]) != volume_serial
-                or int(expected_identity[1]) != file_index
-            ):
+            expected_file_identity = tuple(
+                int(value) for value in expected_identity[:2]
+            )
+            if expected_file_identity not in file_identities:
                 raise ProtocolError("delete destination changed")
             if (
                 not expect_directory
